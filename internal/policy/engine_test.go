@@ -2,6 +2,7 @@ package policy
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -199,5 +200,39 @@ func TestRepeatedRequestReusesPendingEntry(t *testing.T) {
 	}
 	if len(e.Store.Pending()) != 1 {
 		t.Errorf("got %d pending, want 1", len(e.Store.Pending()))
+	}
+}
+
+func TestDenialNamesTheCallerAndCapability(t *testing.T) {
+	e := newTestEngine(t)
+	id := Identity{NodeID: "node-1", NodeName: "laptop.example.ts.net", User: "someone@github"}
+
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"one"}})
+	if got.Outcome != Denied {
+		t.Fatalf("got %v, want denied", got.Outcome)
+	}
+	// This is the first error a new deployment hits, so it has to say who was
+	// refused and what to grant them.
+	for _, want := range []string{"laptop.example.ts.net", "someone@github", CapabilityName, "grants syntax"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason %q missing %q", got.Reason, want)
+		}
+	}
+}
+
+func TestIdentityDescribe(t *testing.T) {
+	tests := []struct {
+		id   Identity
+		want string
+	}{
+		{Identity{NodeName: "n", User: "u"}, "node n (user u)"},
+		{Identity{NodeName: "n"}, "node n"},
+		{Identity{User: "u"}, "user u"},
+		{Identity{NodeID: "abc"}, "node abc"},
+	}
+	for _, tc := range tests {
+		if got := tc.id.Describe(); got != tc.want {
+			t.Errorf("Describe() = %q, want %q", got, tc.want)
+		}
 	}
 }

@@ -7,12 +7,27 @@ import (
 
 // Identity is the caller, as reported by the tailnet.
 type Identity struct {
-	NodeID   string
-	NodeName string
-	User     string
+	NodeID   string `json:"node_id"`
+	NodeName string `json:"node_name,omitempty"`
+	User     string `json:"user,omitempty"`
 	// Grants are the capabilities the tailnet ACL confers on this caller.
 	// They are the ceiling: no stored approval can exceed them.
-	Grants []Grant
+	Grants []Grant `json:"grants"`
+}
+
+// Describe names the caller the way a tailnet ACL would, so a denial can be
+// turned straight into the grant that would fix it.
+func (i Identity) Describe() string {
+	switch {
+	case i.NodeName != "" && i.User != "":
+		return fmt.Sprintf("node %s (user %s)", i.NodeName, i.User)
+	case i.NodeName != "":
+		return fmt.Sprintf("node %s", i.NodeName)
+	case i.User != "":
+		return fmt.Sprintf("user %s", i.User)
+	default:
+		return "node " + i.NodeID
+	}
 }
 
 // Outcome is what the engine decided.
@@ -89,7 +104,10 @@ func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 	if len(id.Grants) == 0 {
 		return Decision{
 			Outcome: Denied,
-			Reason:  "no tsapp capability granted to this caller by the tailnet policy",
+			Reason: fmt.Sprintf(
+				"the tailnet policy grants no tsapp capability to %s; add a grant whose src matches it, "+
+					"with an app capability named %q (app capabilities require the grants syntax, not the legacy acls array)",
+				id.Describe(), CapabilityName),
 		}, nil
 	}
 	if !CoveredByAny(id.Grants, scope) {

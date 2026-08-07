@@ -22,6 +22,11 @@ import (
 // installation can reach.
 const AllRepos = "*"
 
+// CapabilityName is the tailnet ACL capability this service reads. It lives
+// here rather than in the server package so denial messages can name it.
+// Custom capabilities must be <domain>/<path>/<name>.
+const CapabilityName = "asw101.dev/cap/tsapp"
+
 // permissionRank orders GitHub's permission levels so a request for "read"
 // can be satisfied by a grant of "write".
 var permissionRank = map[string]int{

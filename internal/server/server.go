@@ -22,9 +22,9 @@ import (
 	"github.com/asw101/tsapp/internal/policy"
 )
 
-// CapName is the tailnet ACL capability this service reads. Custom
-// capabilities must be <domain>/<path>/<name>.
-const CapName tailcfg.PeerCapability = "asw101.dev/cap/tsapp"
+// CapName is the tailnet ACL capability this service reads, typed for the
+// tailscale API. The string lives in the policy package so denials can name it.
+const CapName tailcfg.PeerCapability = policy.CapabilityName
 
 // Identifier reports who a tailnet peer is. *local.Client satisfies it; tests
 // supply a fake so the authorization logic needs no tailnet.
