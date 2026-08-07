@@ -1,14 +1,22 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/asw101/tsapp/internal/app"
 	"github.com/asw101/tsapp/internal/policy"
 	"github.com/asw101/tsapp/internal/server"
 )
@@ -191,5 +199,92 @@ func TestServeRequiresAppCredentials(t *testing.T) {
 func TestDefaultDirIsNamespaced(t *testing.T) {
 	if got := defaultDir("tsapp"); !strings.HasSuffix(got, "tsapp") {
 		t.Errorf("got %q, want it to end in the app name", got)
+	}
+}
+
+// testSigner builds a throwaway App signer so resolveInstallation can be
+// exercised against a stub API.
+func testSigner(t *testing.T) app.Signer {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	encoded := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+	signer, err := app.ParsePEMSigner(encoded)
+	if err != nil {
+		t.Fatalf("ParsePEMSigner: %v", err)
+	}
+	return signer
+}
+
+func installationsServer(t *testing.T, body string) *app.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return &app.Client{AppID: "1234567", Signer: testSigner(t), BaseURL: srv.URL, HTTP: srv.Client()}
+}
+
+func TestResolveInstallationDiscoversTheOnlyOne(t *testing.T) {
+	client := installationsServer(t, `[{"id":89012345,"account":{"login":"asw101"}}]`)
+
+	// The whole point: with one installation, --installation is unnecessary.
+	got, err := resolveInstallation(context.Background(), client, 0)
+	if err != nil {
+		t.Fatalf("resolveInstallation: %v", err)
+	}
+	if got != 89012345 {
+		t.Errorf("got %d, want 89012345", got)
+	}
+}
+
+func TestResolveInstallationPrefersTheExplicitFlag(t *testing.T) {
+	// An explicit ID must short-circuit before any API call, so a server that
+	// would fail the test if contacted proves it never is.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the API was called despite an explicit --installation")
+	}))
+	t.Cleanup(srv.Close)
+	client := &app.Client{AppID: "1", Signer: testSigner(t), BaseURL: srv.URL, HTTP: srv.Client()}
+
+	got, err := resolveInstallation(context.Background(), client, 42)
+	if err != nil {
+		t.Fatalf("resolveInstallation: %v", err)
+	}
+	if got != 42 {
+		t.Errorf("got %d, want 42", got)
+	}
+}
+
+func TestResolveInstallationListsChoicesWhenAmbiguous(t *testing.T) {
+	client := installationsServer(t,
+		`[{"id":1,"account":{"login":"asw101"}},{"id":2,"account":{"login":"someorg"}}]`)
+
+	_, err := resolveInstallation(context.Background(), client, 0)
+	if err == nil {
+		t.Fatal("want an error when the App spans several installations")
+	}
+	// The error has to be actionable: it is the only place the IDs appear.
+	for _, want := range []string{"--installation", "asw101", "someorg", "1", "2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestResolveInstallationExplainsWhenAppIsUninstalled(t *testing.T) {
+	client := installationsServer(t, `[]`)
+
+	_, err := resolveInstallation(context.Background(), client, 0)
+	if err == nil || !strings.Contains(err.Error(), "no installations") {
+		t.Fatalf("got %v, want a not-installed hint", err)
 	}
 }

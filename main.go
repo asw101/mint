@@ -50,6 +50,7 @@ serve flags:
   --app-id ID         GitHub App ID                 (env GH_APP_ID)
   --key PATH          App private key PEM           (env GH_APP_KEY_FILE)
   --installation ID   installation to mint from     (env GH_APP_INSTALLATION_ID)
+                      optional; discovered when the App has exactly one
   --api URL           GitHub API base URL           (env GITHUB_API_URL)
 
 token flags:
@@ -118,7 +119,8 @@ func cmdServe(args []string) error {
 	useTLS := fs.Bool("tls", false, "serve HTTPS over the tailnet")
 	appID := fs.String("app-id", os.Getenv("GH_APP_ID"), "GitHub App ID")
 	keyPath := fs.String("key", envOr("GH_APP_KEY_FILE", ""), "App private key PEM")
-	installation := fs.Int64("installation", envInt64("GH_APP_INSTALLATION_ID"), "installation ID")
+	installation := fs.Int64("installation", envInt64("GH_APP_INSTALLATION_ID"),
+		"installation ID; discovered automatically when the App has exactly one")
 	apiURL := fs.String("api", envOr("GITHUB_API_URL", app.DefaultBaseURL), "GitHub API base URL")
 	if err := fs.Parse(args); err != nil {
 		return err
