@@ -1,0 +1,11 @@
+# Build output.
+/bin/
+
+# Never commit App private keys.
+*.pem
+*.key
+
+# Local daemon and client state (tsnet keys, approvals, sockets).
+/state/
+*.sock
+approvals.json
