@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -160,7 +161,8 @@ func cmdServe(args []string) error {
 	srv := &tsnet.Server{
 		Hostname: *hostname,
 		Dir:      filepath.Join(*stateDir, "tsnet"),
-		Logf:     func(string, ...any) {}, // tsnet is chatty; errors still surface
+		// Logf (verbose backend) is discarded when unset; UserLogf keeps the
+		// status lines a daemon operator wants.
 	}
 	defer srv.Close()
 
@@ -294,19 +296,50 @@ func (c *clientFlags) dial(ctx context.Context) (*tsnet.Server, *http.Client, er
 	srv := &tsnet.Server{
 		Hostname: c.hostname,
 		Dir:      c.stateDir,
-		Logf: func(format string, args ...any) {
-			line := fmt.Sprintf(format, args...)
-			// The auth URL is the one line a first-run user must see.
+		// Logf is the verbose backend log and is discarded when unset. The
+		// user-facing messages — including the first-run auth URL — go to
+		// UserLogf, which otherwise defaults to log.Printf and is noisy.
+		UserLogf: func(format string, args ...any) {
+			line := strings.TrimSpace(fmt.Sprintf(format, args...))
 			if strings.Contains(line, "://login.tailscale.com") || strings.Contains(line, "To authenticate") {
-				fmt.Fprintln(os.Stderr, strings.TrimSpace(line))
+				fmt.Fprintln(os.Stderr, line)
 			}
 		},
 	}
-	if _, err := srv.Up(ctx); err != nil {
+	status, err := srv.Up(ctx)
+	if err != nil {
 		srv.Close()
 		return nil, nil, fmt.Errorf("join tailnet: %w", err)
 	}
+	if status != nil && status.Self != nil {
+		c.server = expandTailnetHost(c.server, status.Self.DNSName)
+	}
 	return srv, srv.HTTPClient(), nil
+}
+
+// expandTailnetHost turns a bare hostname into a MagicDNS name, using the
+// tailnet suffix from this node's own DNS name. MagicDNS does not resolve bare
+// short names, so "http://tsapp:8080" would otherwise fail with "no such host"
+// even though the peer is right there.
+func expandTailnetHost(server, selfDNSName string) string {
+	u, err := url.Parse(server)
+	if err != nil || u.Host == "" {
+		return server
+	}
+	host := u.Hostname()
+	if host == "" || strings.Contains(host, ".") || net.ParseIP(host) != nil {
+		return server
+	}
+	_, suffix, found := strings.Cut(strings.TrimSuffix(selfDNSName, "."), ".")
+	if !found || suffix == "" {
+		return server
+	}
+	if port := u.Port(); port != "" {
+		u.Host = net.JoinHostPort(host+"."+suffix, port)
+	} else {
+		u.Host = host + "." + suffix
+	}
+	return u.String()
 }
 
 func cmdToken(args []string) error {

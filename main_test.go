@@ -288,3 +288,60 @@ func TestResolveInstallationExplainsWhenAppIsUninstalled(t *testing.T) {
 		t.Fatalf("got %v, want a not-installed hint", err)
 	}
 }
+
+func TestExpandTailnetHost(t *testing.T) {
+	const self = "tsapp-client.tail1234.ts.net."
+
+	tests := []struct {
+		name   string
+		server string
+		want   string
+	}{
+		{
+			// MagicDNS does not resolve bare short names, which is what the
+			// default --server used to be.
+			name:   "bare name gains the tailnet suffix",
+			server: "http://tsapp:8080",
+			want:   "http://tsapp.tail1234.ts.net:8080",
+		},
+		{
+			name:   "bare name without a port",
+			server: "https://tsapp",
+			want:   "https://tsapp.tail1234.ts.net",
+		},
+		{
+			name:   "already qualified is untouched",
+			server: "http://tsapp.tail1234.ts.net:8080",
+			want:   "http://tsapp.tail1234.ts.net:8080",
+		},
+		{
+			name:   "ip address is untouched",
+			server: "http://100.101.102.103:8080",
+			want:   "http://100.101.102.103:8080",
+		},
+		{
+			name:   "path is preserved",
+			server: "http://tsapp:8080/base",
+			want:   "http://tsapp.tail1234.ts.net:8080/base",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := expandTailnetHost(tc.server, self); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExpandTailnetHostLeavesThingsAloneWhenItCannotHelp(t *testing.T) {
+	// A single-label self name yields no suffix; better to leave the address
+	// alone than to build a nonsense one.
+	if got := expandTailnetHost("http://tsapp:8080", "solo."); got != "http://tsapp:8080" {
+		t.Errorf("got %q, want the address unchanged", got)
+	}
+	if got := expandTailnetHost("://bad", "a.b.ts.net."); got != "://bad" {
+		t.Errorf("got %q, want the unparseable address unchanged", got)
+	}
+}
