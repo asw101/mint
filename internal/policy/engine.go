@@ -80,6 +80,10 @@ type Decision struct {
 // Engine evaluates requests against the ACL ceiling and the approval store.
 type Engine struct {
 	Store *Store
+	// Account is the login the installation belongs to. When set, a request
+	// naming a different owner is refused rather than silently reinterpreted:
+	// "otherorg/secrets" must not quietly become this account's "secrets".
+	Account string
 	// Now and NewID are injectable so decisions are reproducible in tests.
 	Now   func() time.Time
 	NewID func() (string, error)
@@ -113,6 +117,12 @@ func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 		return Decision{Outcome: Denied, Reason: "caller has no node identity"}, nil
 	}
 
+	if err := e.checkOwners(scope); err != nil {
+		return Decision{Outcome: Denied, Reason: err.Error(), Scope: scope}, nil
+	}
+
+	// Normalize reduces repositories to bare names, which is what the API and
+	// the grants both use.
 	scope = scope.Normalize()
 
 	if len(id.Grants) == 0 {
@@ -262,4 +272,25 @@ func permissionKey(permissions map[string]string) string {
 		fmt.Fprintf(&b, "%s=%s;", k, permissions[k])
 	}
 	return b.String()
+}
+
+// checkOwners refuses a request naming an owner the installation is not for.
+// Without this, normalizing "otherorg/secrets" to "secrets" would mint against
+// this account's repository of that name.
+func (e *Engine) checkOwners(scope Scope) error {
+	if e.Account == "" {
+		return nil
+	}
+	for _, r := range scope.Repos {
+		owner, name, err := SplitRepo(r)
+		if err != nil {
+			return err
+		}
+		if owner != "" && !strings.EqualFold(owner, e.Account) {
+			return fmt.Errorf("repository %q names owner %q, but this installation is for %q",
+				r, owner, e.Account)
+		}
+		_ = name
+	}
+	return nil
 }

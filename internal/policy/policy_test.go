@@ -177,6 +177,7 @@ func TestScopeString(t *testing.T) {
 func TestScopeValidate(t *testing.T) {
 	valid := []Scope{
 		{Repos: []string{"one"}},
+		{Repos: []string{"owner/one"}},
 		{Repos: []string{"one"}, Permissions: map[string]string{"contents": "read"}},
 		{},
 	}
@@ -187,7 +188,9 @@ func TestScopeValidate(t *testing.T) {
 	}
 
 	invalid := []Scope{
-		{Repos: []string{"owner/name"}},
+		{Repos: []string{"a/b/c"}},
+		{Repos: []string{"/name"}},
+		{Repos: []string{"owner/"}},
 		{Repos: []string{" "}},
 		{Permissions: map[string]string{"contents": "sudo"}},
 		{Permissions: map[string]string{"": "read"}},

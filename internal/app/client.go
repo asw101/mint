@@ -115,6 +115,16 @@ func (c *Client) InstallationForRepo(ctx context.Context, owner, repo string) (*
 	return &installation, nil
 }
 
+// Installation fetches a single installation, so a daemon given an explicit
+// installation ID can still learn which account it belongs to.
+func (c *Client) Installation(ctx context.Context, id int64) (*Installation, error) {
+	var installation Installation
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/app/installations/%d", id), nil, &installation); err != nil {
+		return nil, err
+	}
+	return &installation, nil
+}
+
 // CreateToken mints an installation access token.
 func (c *Client) CreateToken(ctx context.Context, installationID int64, req TokenRequest) (*Token, error) {
 	var token Token

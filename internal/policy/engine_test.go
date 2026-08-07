@@ -145,9 +145,72 @@ func TestEvaluateRejectsMalformedScope(t *testing.T) {
 	e := newTestEngine(t)
 	id := caller(Grant{Repos: []string{AllRepos}})
 
-	got, _ := e.Evaluate(id, Scope{Repos: []string{"owner/name"}})
+	for _, bad := range []string{"a/b/c", "/name", "owner/", " "} {
+		got, _ := e.Evaluate(id, Scope{Repos: []string{bad}})
+		if got.Outcome != Denied {
+			t.Errorf("Evaluate(%q) = %v, want denied", bad, got.Outcome)
+		}
+	}
+}
+
+func TestOwnerQualifiedRepoIsAccepted(t *testing.T) {
+	e := newTestEngine(t)
+	e.Account = "asw101"
+	id := caller(Grant{Repos: []string{"_components"}})
+
+	// owner/name is how everyone writes a repository; it must mean the same as
+	// the bare name the API and the grants use.
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"asw101/_components"}})
+	if got.Outcome != Pending {
+		t.Fatalf("got %v (%s), want pending", got.Outcome, got.Reason)
+	}
+	if len(got.Scope.Repos) != 1 || got.Scope.Repos[0] != "_components" {
+		t.Errorf("got %v, want the owner stripped", got.Scope.Repos)
+	}
+}
+
+func TestBareAndQualifiedNamesShareAnApproval(t *testing.T) {
+	e := newTestEngine(t)
+	e.Account = "asw101"
+	id := caller(Grant{Repos: []string{"_components"}})
+
+	first, _ := e.Evaluate(id, Scope{Repos: []string{"_components"}})
+	if _, err := e.Store.Approve(first.Request.ID, 0, testTime, e.NewID); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+
+	// Spelling the owner out must not look like a different request.
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"asw101/_components"}})
+	if got.Outcome != Allowed {
+		t.Fatalf("got %v (%s), want allowed", got.Outcome, got.Reason)
+	}
+}
+
+func TestForeignOwnerIsRefused(t *testing.T) {
+	e := newTestEngine(t)
+	e.Account = "asw101"
+	id := caller(Grant{Repos: []string{AllRepos}})
+
+	// Stripping the owner would turn someone else's repository into this
+	// account's repository of the same name.
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"otherorg/_components"}})
 	if got.Outcome != Denied {
-		t.Fatalf("got %v, want denied for owner/name form", got.Outcome)
+		t.Fatalf("got %v, want denied", got.Outcome)
+	}
+	if !strings.Contains(got.Reason, "otherorg") || !strings.Contains(got.Reason, "asw101") {
+		t.Errorf("reason %q should name both owners", got.Reason)
+	}
+}
+
+func TestOwnerCheckIsSkippedWhenAccountIsUnknown(t *testing.T) {
+	e := newTestEngine(t)
+	id := caller(Grant{Repos: []string{AllRepos}})
+
+	// With no account configured there is nothing to compare against; the
+	// request should still work rather than fail closed on a guess.
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"anyone/thing"}})
+	if got.Outcome != Pending {
+		t.Fatalf("got %v (%s), want pending", got.Outcome, got.Reason)
 	}
 }
 

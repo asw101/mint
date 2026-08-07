@@ -142,11 +142,11 @@ func cmdServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	installationID, err := resolveInstallation(ctx, gh, *installation)
+	installationID, account, err := resolveInstallation(ctx, gh, *installation)
 	if err != nil {
 		return err
 	}
-	log.Printf("minting from installation %d", installationID)
+	log.Printf("minting from installation %d (%s)", installationID, account)
 
 	store, err := policy.Open(filepath.Join(*stateDir, "approvals.json"))
 	if err != nil {
@@ -178,7 +178,7 @@ func cmdServe(args []string) error {
 	}
 
 	handler := &server.Server{
-		Engine: &policy.Engine{Store: store},
+		Engine: &policy.Engine{Store: store, Account: account},
 		Store:  store,
 		Who:    localClient,
 		Minter: &githubMinter{client: gh, installationID: installationID},
@@ -253,26 +253,33 @@ func (m *githubMinter) Mint(ctx context.Context, scope policy.Scope) (*app.Token
 	})
 }
 
-func resolveInstallation(ctx context.Context, client *app.Client, explicit int64) (int64, error) {
+// resolveInstallation returns the installation to mint from and the account it
+// belongs to. The account is what lets the policy refuse a request naming some
+// other owner.
+func resolveInstallation(ctx context.Context, client *app.Client, explicit int64) (int64, string, error) {
 	if explicit != 0 {
-		return explicit, nil
+		installation, err := client.Installation(ctx, explicit)
+		if err != nil {
+			return 0, "", err
+		}
+		return installation.ID, installation.Account.Login, nil
 	}
 	installations, err := client.Installations(ctx)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	switch len(installations) {
 	case 0:
-		return 0, errors.New("app has no installations; install it on an account first")
+		return 0, "", errors.New("app has no installations; install it on an account first")
 	case 1:
-		return installations[0].ID, nil
+		return installations[0].ID, installations[0].Account.Login, nil
 	default:
 		var b strings.Builder
 		b.WriteString("app has multiple installations; pass --installation:\n")
 		for _, in := range installations {
 			fmt.Fprintf(&b, "  %d\t%s\n", in.ID, in.Account.Login)
 		}
-		return 0, errors.New(strings.TrimRight(b.String(), "\n"))
+		return 0, "", errors.New(strings.TrimRight(b.String(), "\n"))
 	}
 }
 

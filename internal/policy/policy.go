@@ -53,18 +53,44 @@ type Grant struct {
 // IsZero reports whether the scope asks for nothing.
 func (s Scope) IsZero() bool { return len(s.Repos) == 0 && len(s.Permissions) == 0 }
 
-// Normalize returns a copy with repositories sorted and de-duplicated, so
-// equal scopes compare and store identically regardless of argument order.
+// SplitRepo accepts either "owner/name" or a bare "name" and returns the two
+// parts, with an empty owner when none was given.
+func SplitRepo(s string) (owner, name string, err error) {
+	s = strings.TrimSuffix(strings.TrimSpace(s), ".git")
+	if s == "" {
+		return "", "", fmt.Errorf("empty repository name")
+	}
+	parts := strings.Split(s, "/")
+	switch len(parts) {
+	case 1:
+		return "", parts[0], nil
+	case 2:
+		if parts[0] == "" || parts[1] == "" {
+			return "", "", fmt.Errorf("invalid repository %q", s)
+		}
+		return parts[0], parts[1], nil
+	default:
+		return "", "", fmt.Errorf("invalid repository %q (want owner/name or name)", s)
+	}
+}
+
+// Normalize returns a copy with repositories reduced to bare names, sorted and
+// de-duplicated, so equal scopes compare and store identically regardless of
+// argument order or whether the owner was spelled out.
+//
+// The API scopes within the installation's account, so the owner carries no
+// information by the time a token is minted. Owners are checked before this
+// point, by Engine.Evaluate.
 func (s Scope) Normalize() Scope {
 	out := Scope{Permissions: map[string]string{}}
 	seen := map[string]bool{}
 	for _, r := range s.Repos {
-		r = strings.TrimSpace(r)
-		if r == "" || seen[r] {
+		_, name, err := SplitRepo(r)
+		if err != nil || name == "" || seen[name] {
 			continue
 		}
-		seen[r] = true
-		out.Repos = append(out.Repos, r)
+		seen[name] = true
+		out.Repos = append(out.Repos, name)
 	}
 	sort.Strings(out.Repos)
 	for k, v := range s.Permissions {
@@ -188,11 +214,8 @@ func CoveredByAny(grants []Grant, s Scope) bool {
 // Validate reports whether a scope is well formed.
 func (s Scope) Validate() error {
 	for _, r := range s.Repos {
-		if strings.TrimSpace(r) == "" {
-			return fmt.Errorf("empty repository name")
-		}
-		if strings.Contains(r, "/") {
-			return fmt.Errorf("repository %q must be a bare name, not owner/name", r)
+		if _, _, err := SplitRepo(r); err != nil {
+			return err
 		}
 	}
 	for k, v := range s.Permissions {

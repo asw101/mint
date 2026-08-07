@@ -225,7 +225,7 @@ func testSigner(t *testing.T) app.Signer {
 func installationsServer(t *testing.T, body string) *app.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/app/installations" {
+		if !strings.HasPrefix(r.URL.Path, "/app/installations") {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		fmt.Fprint(w, body)
@@ -238,30 +238,39 @@ func TestResolveInstallationDiscoversTheOnlyOne(t *testing.T) {
 	client := installationsServer(t, `[{"id":89012345,"account":{"login":"asw101"}}]`)
 
 	// The whole point: with one installation, --installation is unnecessary.
-	got, err := resolveInstallation(context.Background(), client, 0)
+	got, account, err := resolveInstallation(context.Background(), client, 0)
 	if err != nil {
 		t.Fatalf("resolveInstallation: %v", err)
 	}
 	if got != 89012345 {
 		t.Errorf("got %d, want 89012345", got)
 	}
+	// The account is what lets the policy refuse a request naming another owner.
+	if account != "asw101" {
+		t.Errorf("got account %q, want asw101", account)
+	}
 }
 
-func TestResolveInstallationPrefersTheExplicitFlag(t *testing.T) {
-	// An explicit ID must short-circuit before any API call, so a server that
-	// would fail the test if contacted proves it never is.
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("the API was called despite an explicit --installation")
+func TestResolveInstallationLooksUpAnExplicitID(t *testing.T) {
+	// An explicit ID still needs one lookup, to learn the account the owner
+	// guard checks against — but it must not enumerate every installation.
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		fmt.Fprint(w, `{"id":42,"account":{"login":"someorg"}}`)
 	}))
 	t.Cleanup(srv.Close)
 	client := &app.Client{AppID: "1", Signer: testSigner(t), BaseURL: srv.URL, HTTP: srv.Client()}
 
-	got, err := resolveInstallation(context.Background(), client, 42)
+	got, account, err := resolveInstallation(context.Background(), client, 42)
 	if err != nil {
 		t.Fatalf("resolveInstallation: %v", err)
 	}
-	if got != 42 {
-		t.Errorf("got %d, want 42", got)
+	if got != 42 || account != "someorg" {
+		t.Errorf("got %d/%q, want 42/someorg", got, account)
+	}
+	if path != "/app/installations/42" {
+		t.Errorf("got path %q, want the single-installation endpoint", path)
 	}
 }
 
@@ -269,7 +278,7 @@ func TestResolveInstallationListsChoicesWhenAmbiguous(t *testing.T) {
 	client := installationsServer(t,
 		`[{"id":1,"account":{"login":"asw101"}},{"id":2,"account":{"login":"someorg"}}]`)
 
-	_, err := resolveInstallation(context.Background(), client, 0)
+	_, _, err := resolveInstallation(context.Background(), client, 0)
 	if err == nil {
 		t.Fatal("want an error when the App spans several installations")
 	}
@@ -284,7 +293,7 @@ func TestResolveInstallationListsChoicesWhenAmbiguous(t *testing.T) {
 func TestResolveInstallationExplainsWhenAppIsUninstalled(t *testing.T) {
 	client := installationsServer(t, `[]`)
 
-	_, err := resolveInstallation(context.Background(), client, 0)
+	_, _, err := resolveInstallation(context.Background(), client, 0)
 	if err == nil || !strings.Contains(err.Error(), "no installations") {
 		t.Fatalf("got %v, want a not-installed hint", err)
 	}
