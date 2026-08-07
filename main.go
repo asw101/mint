@@ -318,9 +318,9 @@ func (c *clientFlags) dial(ctx context.Context) (*tsnet.Server, *http.Client, er
 }
 
 // expandTailnetHost turns a bare hostname into a MagicDNS name, using the
-// tailnet suffix from this node's own DNS name. MagicDNS does not resolve bare
-// short names, so "http://tsapp:8080" would otherwise fail with "no such host"
-// even though the peer is right there.
+// tailnet suffix from this node's own DNS name. Short names do resolve once
+// the tailnet's DNS configuration is in place, so this is belt and braces
+// rather than a fix — see settleTimeout for the failure it looks like.
 func expandTailnetHost(server, selfDNSName string) string {
 	u, err := url.Parse(server)
 	if err != nil || u.Host == "" {
@@ -371,14 +371,15 @@ func cmdToken(args []string) error {
 	defer srv.Close()
 
 	body, _ := json.Marshal(server.TokenRequest{Repos: scope.Repos, Permissions: scope.Permissions})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimSuffix(cf.server, "/")+"/v1/token", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
+	resp, err := doWhileSettling(ctx, httpClient, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			strings.TrimSuffix(cf.server, "/")+"/v1/token", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		return fmt.Errorf("reach %s: %w", cf.server, err)
 	}
@@ -429,12 +430,55 @@ func cmdWhoami(args []string) error {
 	}
 	defer srv.Close()
 
-	resp, err := httpClient.Get(strings.TrimSuffix(cf.server, "/") + "/v1/whoami")
+	resp, err := doWhileSettling(ctx, httpClient, func() (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodGet,
+			strings.TrimSuffix(cf.server, "/")+"/v1/whoami", nil)
+	})
 	if err != nil {
 		return fmt.Errorf("reach %s: %w", cf.server, err)
 	}
 	defer resp.Body.Close()
 	return copyJSON(resp)
+}
+
+// settleTimeout bounds how long a client waits for the tailnet to become
+// usable before giving up.
+//
+// tsnet reports Running before the tailnet's DNS configuration has been
+// applied, so the first request after a fresh join can fail to resolve a peer
+// that is about to be reachable. It looks like a hard "no such host" and goes
+// away if you simply run the command again, which is a poor way to learn about
+// it. Retrying transient failures makes the first run behave like the second.
+const settleTimeout = 20 * time.Second
+
+// doWhileSettling retries request failures until the tailnet settles. Only
+// transport errors are retried; an HTTP response, whatever its status, is the
+// server having answered.
+func doWhileSettling(ctx context.Context, client *http.Client, newRequest func() (*http.Request, error)) (*http.Response, error) {
+	deadline := time.Now().Add(settleTimeout)
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		req, err := newRequest()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return nil, lastErr
+		}
+		if attempt == 0 {
+			fmt.Fprintln(os.Stderr, "tsapp: waiting for the tailnet to settle...")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // --- admin ---

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -343,5 +344,82 @@ func TestExpandTailnetHostLeavesThingsAloneWhenItCannotHelp(t *testing.T) {
 	}
 	if got := expandTailnetHost("://bad", "a.b.ts.net."); got != "://bad" {
 		t.Errorf("got %q, want the unparseable address unchanged", got)
+	}
+}
+
+// flakyTransport fails the first n round trips, then delegates.
+type flakyTransport struct {
+	remaining int
+	attempts  int
+	next      http.RoundTripper
+}
+
+func (f *flakyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.attempts++
+	if f.remaining > 0 {
+		f.remaining--
+		return nil, &net.DNSError{Err: "no such host", Name: r.URL.Hostname(), IsNotFound: true}
+	}
+	return f.next.RoundTrip(r)
+}
+
+func TestDoWhileSettlingRetriesTransportErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	// The first run after a fresh join fails to resolve until the tailnet's
+	// DNS lands; the request should ride that out rather than making the user
+	// run the command twice.
+	transport := &flakyTransport{remaining: 3, next: srv.Client().Transport}
+	client := &http.Client{Transport: transport}
+
+	resp, err := doWhileSettling(context.Background(), client, func() (*http.Request, error) {
+		return http.NewRequest(http.MethodGet, srv.URL, nil)
+	})
+	if err != nil {
+		t.Fatalf("doWhileSettling: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("got %d, want 200", resp.StatusCode)
+	}
+	if transport.attempts != 4 {
+		t.Errorf("got %d attempts, want 4", transport.attempts)
+	}
+}
+
+func TestDoWhileSettlingDoesNotRetryAnAnswer(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	// A 403 is the server answering. Retrying it would turn a fast denial into
+	// a twenty second hang.
+	resp, err := doWhileSettling(context.Background(), srv.Client(), func() (*http.Request, error) {
+		return http.NewRequest(http.MethodGet, srv.URL, nil)
+	})
+	if err != nil {
+		t.Fatalf("doWhileSettling: %v", err)
+	}
+	defer resp.Body.Close()
+	if calls != 1 {
+		t.Errorf("got %d calls, want 1", calls)
+	}
+}
+
+func TestDoWhileSettlingHonoursContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	client := &http.Client{Transport: &flakyTransport{remaining: 1000}}
+	if _, err := doWhileSettling(ctx, client, func() (*http.Request, error) {
+		return http.NewRequest(http.MethodGet, "http://example.invalid", nil)
+	}); err == nil {
+		t.Fatal("want an error once the context is cancelled")
 	}
 }
