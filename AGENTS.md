@@ -20,9 +20,9 @@ architecture.
 | `internal/server/server.go` | The tailnet and admin HTTP surfaces. |
 | `internal/app/` | GitHub App JWT signing and token minting. |
 
-`internal/app` is a **copy** of the same package in [`ghapp`](../ghapp), not an
-import. The two are allowed to diverge; do not add a module dependency between
-them.
+`internal/app` is a **vendored copy** of a package maintained elsewhere in this
+workspace, not an import. The two are allowed to diverge; do not add a module
+dependency between them to share it.
 
 ## Conventions
 
