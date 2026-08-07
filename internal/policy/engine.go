@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -10,6 +11,10 @@ type Identity struct {
 	NodeID   string `json:"node_id"`
 	NodeName string `json:"node_name,omitempty"`
 	User     string `json:"user,omitempty"`
+	// Tags are the ACL tags the node carries. A tagged node reports its user
+	// as "tagged-devices", so the tags are the only thing a grant's src can
+	// usefully match.
+	Tags []string `json:"tags,omitempty"`
 	// Grants are the capabilities the tailnet ACL confers on this caller.
 	// They are the ceiling: no stored approval can exceed them.
 	Grants []Grant `json:"grants"`
@@ -18,6 +23,9 @@ type Identity struct {
 // Describe names the caller the way a tailnet ACL would, so a denial can be
 // turned straight into the grant that would fix it.
 func (i Identity) Describe() string {
+	if len(i.Tags) > 0 {
+		return fmt.Sprintf("node %s (%s)", i.NodeName, strings.Join(i.Tags, ", "))
+	}
 	switch {
 	case i.NodeName != "" && i.User != "":
 		return fmt.Sprintf("node %s (user %s)", i.NodeName, i.User)

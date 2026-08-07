@@ -236,3 +236,20 @@ func TestIdentityDescribe(t *testing.T) {
 		}
 	}
 }
+
+func TestDescribePrefersTagsOverTheTaggedDevicesUser(t *testing.T) {
+	// A tagged node reports its user as "tagged-devices", which is useless in a
+	// grant. The tags are what src must match, so they win.
+	id := Identity{
+		NodeName: "tsapp-client.example.ts.net.",
+		User:     "tagged-devices",
+		Tags:     []string{"tag:agent"},
+	}
+	got := id.Describe()
+	if !strings.Contains(got, "tag:agent") {
+		t.Errorf("Describe() = %q, want it to name the tag", got)
+	}
+	if strings.Contains(got, "tagged-devices") {
+		t.Errorf("Describe() = %q, should not offer tagged-devices as something to match", got)
+	}
+}

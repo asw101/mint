@@ -185,6 +185,10 @@ func (s *Server) identify(r *http.Request) (policy.Identity, error) {
 	if who.UserProfile != nil {
 		identity.User = who.UserProfile.LoginName
 	}
+	// A tagged node reports its user as "tagged-devices", so the tags are what
+	// a grant's src has to match. Surfacing them is the difference between a
+	// guessable and an unguessable denial.
+	identity.Tags = append(identity.Tags, who.Node.Tags...)
 	return identity, nil
 }
 
