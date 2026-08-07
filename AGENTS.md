@@ -5,9 +5,8 @@ Guidance for AI coding agents working in `tsapp`.
 ## What this is
 
 A daemon that mints GitHub App tokens for tailnet clients, plus the client and
-admin CLI for it. See [`README.md`](./README.md) for usage and
-[`notes/tailnet-secret-broker.md`](../notes/tailnet-secret-broker.md) for the
-architecture.
+admin CLI for it. See [`README.md`](./README.md) for usage and the design it
+implements.
 
 ## Layout
 
@@ -20,9 +19,8 @@ architecture.
 | `internal/server/server.go` | The tailnet and admin HTTP surfaces. |
 | `internal/app/` | GitHub App JWT signing and token minting. |
 
-`internal/app` is a **vendored copy** of a package maintained elsewhere in this
-workspace, not an import. The two are allowed to diverge; do not add a module
-dependency between them to share it.
+`internal/app` is a **vendored copy**, not an import. Keep it that way: do not
+add a module dependency to share it with anything else.
 
 ## Conventions
 
