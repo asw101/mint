@@ -253,3 +253,31 @@ func TestDescribePrefersTagsOverTheTaggedDevicesUser(t *testing.T) {
 		t.Errorf("Describe() = %q, should not offer tagged-devices as something to match", got)
 	}
 }
+
+func TestDeniedRequestWithoutPermissionsExplainsItself(t *testing.T) {
+	e := newTestEngine(t)
+	// The grant looks like it covers _components, and the confusing part is
+	// that naming no permissions means "everything", not "whatever you allow".
+	id := caller(Grant{Repos: []string{"_components"}, Permissions: map[string]string{"contents": "read"}})
+
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"_components"}})
+	if got.Outcome != Denied {
+		t.Fatalf("got %v, want denied", got.Outcome)
+	}
+	if !strings.Contains(got.Reason, "--permission contents=read") {
+		t.Errorf("reason %q should say how to fix it", got.Reason)
+	}
+}
+
+func TestDeniedUnscopedRequestExplainsItself(t *testing.T) {
+	e := newTestEngine(t)
+	id := caller(Grant{Repos: []string{"_components"}})
+
+	got, _ := e.Evaluate(id, Scope{})
+	if got.Outcome != Denied {
+		t.Fatalf("got %v, want denied", got.Outcome)
+	}
+	if !strings.Contains(got.Reason, "--repo") {
+		t.Errorf("reason %q should say how to fix it", got.Reason)
+	}
+}

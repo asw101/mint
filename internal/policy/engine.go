@@ -121,7 +121,8 @@ func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 	if !CoveredByAny(id.Grants, scope) {
 		return Decision{
 			Outcome: Denied,
-			Reason:  fmt.Sprintf("scope %s exceeds the capability granted by the tailnet policy", scope),
+			Reason: fmt.Sprintf("scope %s exceeds the capability granted by the tailnet policy%s",
+				scope, explainCeilingMiss(id.Grants, scope)),
 		}, nil
 	}
 
@@ -157,4 +158,28 @@ func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 		Reason:  fmt.Sprintf("scope %s needs approval", scope),
 		Request: req,
 	}, nil
+}
+
+// explainCeilingMiss adds a hint for the two ways a request can exceed a grant
+// that looks like it should cover it.
+func explainCeilingMiss(grants []Grant, scope Scope) string {
+	restrictsPermissions := false
+	wildcard := false
+	for _, g := range grants {
+		if len(g.Permissions) > 0 {
+			restrictsPermissions = true
+		}
+		if g.hasWildcard() {
+			wildcard = true
+		}
+	}
+	if len(scope.Permissions) == 0 && restrictsPermissions {
+		return " (the request named no permissions, which means the installation's whole grant;" +
+			" the policy restricts permissions, so name them, e.g. --permission contents=read)"
+	}
+	if len(scope.Repos) == 0 && !wildcard {
+		return " (the request named no repositories, which means every repository the installation can reach;" +
+			" name them with --repo, or grant \"repos\": [\"*\"])"
+	}
+	return ""
 }
