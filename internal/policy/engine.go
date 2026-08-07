@@ -2,6 +2,8 @@ package policy
 
 import (
 	"fmt"
+	"maps"
+	"sort"
 	"strings"
 	"time"
 )
@@ -67,6 +69,10 @@ func (o Outcome) String() string {
 type Decision struct {
 	Outcome Outcome
 	Reason  string
+	// Scope is the effective scope: what the caller asked for, with any
+	// permissions it omitted filled in from the policy. Mint this, not the
+	// original request.
+	Scope Scope
 	// Request is set when Outcome is Pending.
 	Request Request
 }
@@ -101,7 +107,7 @@ func (e *Engine) newID() (string, error) {
 // queue full of unsatisfiable requests trains people to approve blindly.
 func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 	if err := scope.Validate(); err != nil {
-		return Decision{Outcome: Denied, Reason: err.Error()}, nil
+		return Decision{Outcome: Denied, Reason: err.Error(), Scope: scope}, nil
 	}
 	if id.NodeID == "" {
 		return Decision{Outcome: Denied, Reason: "caller has no node identity"}, nil
@@ -118,9 +124,19 @@ func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 				id.Describe(), CapabilityName),
 		}, nil
 	}
+	// A request that names no permissions means "the most this policy allows"
+	// rather than "the installation's whole grant". Resolving from the
+	// covering grant can only ever narrow the result, and it turns the most
+	// common denial into a correctly scoped token.
+	scope, err := resolvePermissions(id.Grants, scope)
+	if err != nil {
+		return Decision{Outcome: Denied, Reason: err.Error(), Scope: scope}, nil
+	}
+
 	if !CoveredByAny(id.Grants, scope) {
 		return Decision{
 			Outcome: Denied,
+			Scope:   scope,
 			Reason: fmt.Sprintf("scope %s exceeds the capability granted by the tailnet policy%s",
 				scope, explainCeilingMiss(id.Grants, scope)),
 		}, nil
@@ -135,6 +151,7 @@ func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 	if CoveredByAny(grants, scope) {
 		return Decision{
 			Outcome: Allowed,
+			Scope:   scope,
 			Reason:  fmt.Sprintf("scope %s covered by an existing approval", scope),
 		}, nil
 	}
@@ -155,6 +172,7 @@ func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 	}
 	return Decision{
 		Outcome: Pending,
+		Scope:   scope,
 		Reason:  fmt.Sprintf("scope %s needs approval", scope),
 		Request: req,
 	}, nil
@@ -173,13 +191,75 @@ func explainCeilingMiss(grants []Grant, scope Scope) string {
 			wildcard = true
 		}
 	}
-	if len(scope.Permissions) == 0 && restrictsPermissions {
-		return " (the request named no permissions, which means the installation's whole grant;" +
-			" the policy restricts permissions, so name them, e.g. --permission contents=read)"
-	}
 	if len(scope.Repos) == 0 && !wildcard {
 		return " (the request named no repositories, which means every repository the installation can reach;" +
 			" name them with --repo, or grant \"repos\": [\"*\"])"
 	}
+	if len(scope.Permissions) == 0 && restrictsPermissions {
+		// Reachable only when no grant covers the repositories, since a
+		// covering grant would have supplied the permissions.
+		return " (no grant covers those repositories, so the permissions could not be inferred either)"
+	}
 	return ""
+}
+
+// resolvePermissions fills in the permissions a request omitted, taking them
+// from the grant that covers the repositories asked for.
+//
+// This is strictly narrowing: the result is derived from the ceiling, so it can
+// never permit more than leaving the request unrestricted would have. Grants
+// that do not restrict permissions leave the request unrestricted too, which
+// defers to the App's own set.
+func resolvePermissions(grants []Grant, scope Scope) (Scope, error) {
+	if len(scope.Permissions) > 0 {
+		return scope, nil
+	}
+
+	var covering []Grant
+	for _, g := range grants {
+		if g.coversRepos(scope.Repos) {
+			covering = append(covering, g)
+		}
+	}
+	if len(covering) == 0 {
+		// Nothing covers the repositories; the ceiling check reports that,
+		// with a better message than this function could give.
+		return scope, nil
+	}
+
+	want := permissionKey(covering[0].Permissions)
+	for _, g := range covering[1:] {
+		if permissionKey(g.Permissions) != want {
+			return scope, fmt.Errorf(
+				"scope %s matches several tailnet grants with different permissions, "+
+					"so the request must name the permissions it wants, e.g. --permission contents=read",
+				scope)
+		}
+	}
+
+	if len(covering[0].Permissions) == 0 {
+		// The grant does not restrict permissions, so neither does the request.
+		return scope, nil
+	}
+	resolved := scope
+	resolved.Permissions = maps.Clone(covering[0].Permissions)
+	return resolved, nil
+}
+
+// permissionKey renders a permission set canonically so two grants can be
+// compared regardless of map ordering.
+func permissionKey(permissions map[string]string) string {
+	if len(permissions) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(permissions))
+	for k := range permissions {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&b, "%s=%s;", k, permissions[k])
+	}
+	return b.String()
 }

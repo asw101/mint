@@ -254,18 +254,85 @@ func TestDescribePrefersTagsOverTheTaggedDevicesUser(t *testing.T) {
 	}
 }
 
-func TestDeniedRequestWithoutPermissionsExplainsItself(t *testing.T) {
+func TestOmittedPermissionsResolveFromTheGrant(t *testing.T) {
 	e := newTestEngine(t)
-	// The grant looks like it covers _components, and the confusing part is
-	// that naming no permissions means "everything", not "whatever you allow".
 	id := caller(Grant{Repos: []string{"_components"}, Permissions: map[string]string{"contents": "read"}})
 
+	// Naming no permissions means "the most this policy allows", so the
+	// request is narrowed to the grant rather than refused for exceeding it.
 	got, _ := e.Evaluate(id, Scope{Repos: []string{"_components"}})
+	if got.Outcome != Pending {
+		t.Fatalf("got %v (%s), want pending", got.Outcome, got.Reason)
+	}
+	if got.Scope.Permissions["contents"] != "read" {
+		t.Errorf("got permissions %v, want contents=read filled in", got.Scope.Permissions)
+	}
+	// The stored request must be the resolved scope, or approving it would
+	// bless something wider than was decided.
+	if e.Store.Pending()[0].Scope.Permissions["contents"] != "read" {
+		t.Errorf("pending request stored %v", e.Store.Pending()[0].Scope)
+	}
+}
+
+func TestUnrestrictedGrantLeavesTheRequestUnrestricted(t *testing.T) {
+	e := newTestEngine(t)
+	// No permissions in the grant means defer to the App's own set.
+	id := caller(Grant{Repos: []string{AllRepos}})
+
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"anything"}})
+	if got.Outcome != Pending {
+		t.Fatalf("got %v (%s), want pending", got.Outcome, got.Reason)
+	}
+	if len(got.Scope.Permissions) != 0 {
+		t.Errorf("got %v, want permissions left unset", got.Scope.Permissions)
+	}
+}
+
+func TestExplicitPermissionsAreNotOverridden(t *testing.T) {
+	e := newTestEngine(t)
+	id := caller(Grant{Repos: []string{"one"}, Permissions: map[string]string{"contents": "write"}})
+
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"one"}, Permissions: map[string]string{"contents": "read"}})
+	if got.Outcome != Pending {
+		t.Fatalf("got %v (%s), want pending", got.Outcome, got.Reason)
+	}
+	// Asking for less than the grant allows must stay less.
+	if got.Scope.Permissions["contents"] != "read" {
+		t.Errorf("got %v, want the explicit contents=read preserved", got.Scope.Permissions)
+	}
+}
+
+func TestAmbiguousGrantsRequireExplicitPermissions(t *testing.T) {
+	e := newTestEngine(t)
+	id := caller(
+		Grant{Repos: []string{"one"}, Permissions: map[string]string{"contents": "read"}},
+		Grant{Repos: []string{"one"}, Permissions: map[string]string{"contents": "write"}},
+	)
+
+	// Two grants cover the repository with different permissions; picking one
+	// would be a guess about intent.
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"one"}})
 	if got.Outcome != Denied {
 		t.Fatalf("got %v, want denied", got.Outcome)
 	}
-	if !strings.Contains(got.Reason, "--permission contents=read") {
-		t.Errorf("reason %q should say how to fix it", got.Reason)
+	if !strings.Contains(got.Reason, "several tailnet grants") {
+		t.Errorf("reason %q should explain the ambiguity", got.Reason)
+	}
+}
+
+func TestResolutionPicksTheGrantCoveringTheRepos(t *testing.T) {
+	e := newTestEngine(t)
+	id := caller(
+		Grant{Repos: []string{"public"}, Permissions: map[string]string{"contents": "read"}},
+		Grant{Repos: []string{"private"}, Permissions: map[string]string{"contents": "write"}},
+	)
+
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"private"}})
+	if got.Outcome != Pending {
+		t.Fatalf("got %v (%s), want pending", got.Outcome, got.Reason)
+	}
+	if got.Scope.Permissions["contents"] != "write" {
+		t.Errorf("got %v, want the private grant's permissions", got.Scope.Permissions)
 	}
 }
 

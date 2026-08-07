@@ -312,3 +312,62 @@ func TestAdminSurfaceIsNotOnTheTailnetHandler(t *testing.T) {
 }
 
 const AllReposForTest = policy.AllRepos
+
+func TestMintsTheResolvedScopeNotTheRawRequest(t *testing.T) {
+	minter := &fakeMinter{token: &app.Token{Token: "ghs_example"}}
+	s := newTestServer(t, whoIs(t, "node-1", policy.Grant{
+		Repos:       []string{"one"},
+		Permissions: map[string]string{"contents": "read"},
+	}), minter)
+
+	// The client names no permissions; the policy supplies contents=read.
+	postToken(t, s, TokenRequest{Repos: []string{"one"}})
+	if _, err := s.Store.Approve("req1", 0, testTime, policy.NewID); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	postToken(t, s, TokenRequest{Repos: []string{"one"}})
+
+	// Minting the raw request would ask GitHub for the installation's whole
+	// grant, quietly handing out more than the policy allows.
+	if got := minter.got.Permissions["contents"]; got != "read" {
+		t.Errorf("minted with permissions %v, want contents=read", minter.got.Permissions)
+	}
+}
+
+func TestAdminStatusVerbsAreSpelledCorrectly(t *testing.T) {
+	s := newTestServer(t, whoIs(t, "node-1", policy.Grant{Repos: []string{"one"}}), &fakeMinter{})
+	admin := s.AdminHandler()
+
+	postToken(t, s, TokenRequest{Repos: []string{"one"}})
+	approval, err := s.Store.Approve("req1", 0, testTime, func() (string, error) { return "app1", nil })
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+
+	for _, tc := range []struct{ path, id, want string }{
+		{"/v1/revoke", approval.ID, "revoked"},
+	} {
+		rec := httptest.NewRecorder()
+		admin.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tc.path,
+			bytes.NewReader([]byte(fmt.Sprintf(`{"id":%q}`, tc.id)))))
+		var status StatusResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if status.Status != tc.want {
+			t.Errorf("%s returned %q, want %q", tc.path, status.Status, tc.want)
+		}
+	}
+
+	postToken(t, s, TokenRequest{Repos: []string{"one"}})
+	rec := httptest.NewRecorder()
+	admin.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/deny",
+		bytes.NewReader([]byte(`{"id":"req2"}`))))
+	var status StatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if status.Status != "denied" {
+		t.Errorf("deny returned %q, want \"denied\"", status.Status)
+	}
+}

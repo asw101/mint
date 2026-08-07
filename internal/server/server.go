@@ -131,7 +131,9 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case policy.Allowed:
-		token, err := s.Minter.Mint(r.Context(), scope)
+		// Mint what the engine decided, which may have had permissions filled
+		// in from the policy, not the raw request.
+		token, err := s.Minter.Mint(r.Context(), decision.Scope)
 		if err != nil {
 			s.logf("token: %s: mint: %v", identity.NodeName, err)
 			writeJSON(w, http.StatusBadGateway, StatusResponse{Status: "error", Reason: err.Error()})
@@ -140,11 +142,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		// Automatic grants are the ones nobody remembers approving, so they
 		// are the ones the audit trail has to capture.
 		s.logf("token: ALLOWED %s (%s) scope=%s expires=%s",
-			identity.NodeName, identity.NodeID, scope, token.ExpiresAt.Format(time.RFC3339))
+			identity.NodeName, identity.NodeID, decision.Scope, token.ExpiresAt.Format(time.RFC3339))
 		writeJSON(w, http.StatusOK, TokenResponse{
 			Token:       token.Token,
 			ExpiresAt:   token.ExpiresAt,
-			Repos:       scope.Normalize().Repos,
+			Repos:       decision.Scope.Repos,
 			Permissions: token.Permissions,
 		})
 	}
@@ -231,14 +233,16 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeny(w http.ResponseWriter, r *http.Request) {
-	s.mutateByID(w, r, "deny", s.Store.Deny)
+	s.mutateByID(w, r, "deny", "denied", s.Store.Deny)
 }
 
 func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
-	s.mutateByID(w, r, "revoke", s.Store.Revoke)
+	s.mutateByID(w, r, "revoke", "revoked", s.Store.Revoke)
 }
 
-func (s *Server) mutateByID(w http.ResponseWriter, r *http.Request, action string, fn func(string) error) {
+// mutateByID takes the past tense explicitly; deriving it by appending "ed"
+// produced "revokeed" and "denyed".
+func (s *Server) mutateByID(w http.ResponseWriter, r *http.Request, action, done string, fn func(string) error) {
 	var body struct {
 		ID string `json:"id"`
 	}
@@ -251,7 +255,7 @@ func (s *Server) mutateByID(w http.ResponseWriter, r *http.Request, action strin
 		return
 	}
 	s.logf("%s: %s", action, body.ID)
-	writeJSON(w, http.StatusOK, StatusResponse{Status: action + "ed"})
+	writeJSON(w, http.StatusOK, StatusResponse{Status: done})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
