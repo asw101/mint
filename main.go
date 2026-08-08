@@ -44,10 +44,13 @@ Usage:
   tsapp approve <id> [--ttl 30d]   approve a pending request
   tsapp deny <id>                  drop a pending request
   tsapp revoke <id>                revoke an approval
+  tsapp reset daemon --yes         delete daemon identity and approvals
+  tsapp reset client --yes         delete client identity
+  tsapp reset all --yes            delete daemon and client state
 
 serve flags:
   --hostname NAME     tailnet name to claim         (default tsapp)
-  --state-dir PATH    tsnet state and approvals     (default ~/.config/tsapp)
+  --state-dir PATH    tsnet state and approvals     (default OS config dir/tsapp)
   --socket PATH       admin socket                  (default <state-dir>/admin.sock)
   --port N            tailnet listen port           (default 8080)
   --tls               serve HTTPS on :443 instead of HTTP; needs HTTPS
@@ -63,7 +66,7 @@ token flags:
   --repo NAME         repository, repeatable and comma-separated
   --permission k=v    narrow a permission, repeatable
   --hostname NAME     tailnet name for this client  (default tsapp-client)
-  --state-dir PATH    tsnet state for this client   (default ~/.config/tsapp-client)
+  --state-dir PATH    tsnet state for this client   (default OS config dir/tsapp-client)
   --json              print the full response
 
 Clients join the tailnet on first run and print a login URL. Approve the node
@@ -73,6 +76,10 @@ after that it asks for scopes and this daemon decides.
 Admin commands talk to the daemon over its Unix socket, so they work only from
 the host it runs on. That is deliberate: approving is an operator action, not
 something a tailnet client can reach.
+
+Reset permanently deletes local tsnet identities and, for the daemon, every
+approval. It does not remove the corresponding nodes from the Tailscale admin
+console.
 
 Exit codes from 'tsapp token', so a script need not read the message:
   0  a token, on stdout
@@ -134,6 +141,8 @@ func run(args []string) error {
 		return cmdAdminByID(args[1:], "deny", "/v1/deny")
 	case "revoke":
 		return cmdAdminByID(args[1:], "revoke", "/v1/revoke")
+	case "reset":
+		return cmdReset(args[1:])
 	case "version", "--version", "-version":
 		fmt.Print(versionReport())
 		return nil
@@ -712,6 +721,143 @@ func adminPost(socket, path string, body []byte) error {
 
 func adminDialError(socket string, err error) error {
 	return fmt.Errorf("reach the daemon at %s (is 'tsapp serve' running on this host?): %w", socket, err)
+}
+
+// --- reset ---
+
+func cmdReset(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: tsapp reset daemon|client|all --yes")
+	}
+	target := args[0]
+	if target != "daemon" && target != "client" && target != "all" {
+		return fmt.Errorf("unknown reset target %q (want daemon, client, or all)", target)
+	}
+
+	fs := flag.NewFlagSet("reset "+target, flag.ContinueOnError)
+	var stateDir, daemonStateDir, clientStateDir, socket string
+	switch target {
+	case "daemon":
+		fs.StringVar(&stateDir, "state-dir", envOr("TSAPP_STATE_DIR", defaultDir("tsapp")),
+			"daemon state directory")
+		fs.StringVar(&socket, "socket", "", "daemon admin socket used to check whether it is running")
+	case "client":
+		fs.StringVar(&stateDir, "state-dir", envOr("TSAPP_STATE_DIR", defaultDir("tsapp-client")),
+			"client state directory")
+	case "all":
+		fs.StringVar(&daemonStateDir, "daemon-state-dir", defaultDir("tsapp"),
+			"daemon state directory")
+		fs.StringVar(&clientStateDir, "client-state-dir", defaultDir("tsapp-client"),
+			"client state directory")
+		fs.StringVar(&socket, "socket", "", "daemon admin socket used to check whether it is running")
+	}
+	yes := fs.Bool("yes", false, "confirm permanent deletion")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+
+	var dirs []string
+	switch target {
+	case "daemon":
+		daemonStateDir = stateDir
+		dirs = []string{stateDir}
+	case "client":
+		dirs = []string{stateDir}
+	case "all":
+		dirs = []string{daemonStateDir, clientStateDir}
+	}
+
+	for i, dir := range dirs {
+		safe, err := safeResetDir(dir)
+		if err != nil {
+			return err
+		}
+		dirs[i] = safe
+	}
+	if target == "daemon" || target == "all" {
+		daemonStateDir = dirs[0]
+	}
+	if !*yes {
+		return fmt.Errorf("reset %s would permanently remove %s; rerun with --yes",
+			target, strings.Join(dirs, " and "))
+	}
+
+	if target == "daemon" || target == "all" {
+		if socket == "" {
+			socket = filepath.Join(daemonStateDir, "admin.sock")
+		}
+		if err := ensureDaemonStopped(socket); err != nil {
+			return err
+		}
+	}
+
+	seen := make(map[string]bool, len(dirs))
+	for _, dir := range dirs {
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("remove state directory %s: %w", dir, err)
+		}
+		fmt.Printf("removed %s\n", dir)
+	}
+	fmt.Fprintln(os.Stderr, "Remove the corresponding node or nodes from the Tailscale admin console.")
+	return nil
+}
+
+func safeResetDir(dir string) (string, error) {
+	if strings.TrimSpace(dir) == "" {
+		return "", errors.New("refusing to reset an empty state directory")
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve state directory %q: %w", dir, err)
+	}
+	abs = filepath.Clean(abs)
+	root := filepath.Clean(string(filepath.Separator))
+	if volume := filepath.VolumeName(abs); volume != "" {
+		root = filepath.Clean(volume + string(filepath.Separator))
+	}
+	protected := []string{root}
+	if home, err := os.UserHomeDir(); err == nil {
+		protected = append(protected, filepath.Clean(home))
+	}
+	if config, err := os.UserConfigDir(); err == nil {
+		protected = append(protected, filepath.Clean(config))
+	}
+	for _, path := range protected {
+		if abs == path {
+			return "", fmt.Errorf("refusing to reset protected directory %s", abs)
+		}
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		resolved = filepath.Clean(resolved)
+		for _, path := range protected {
+			if resolved == path {
+				return "", fmt.Errorf("refusing to reset %s because it resolves to protected directory %s", abs, resolved)
+			}
+		}
+	}
+	return abs, nil
+}
+
+func ensureDaemonStopped(socket string) error {
+	conn, err := net.DialTimeout("unix", socket, 250*time.Millisecond)
+	if err == nil {
+		conn.Close()
+		return fmt.Errorf("daemon is still running at %s; stop it before resetting its state", socket)
+	}
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+		return nil
+	}
+	if _, statErr := os.Lstat(socket); errors.Is(statErr, os.ErrNotExist) {
+		return nil
+	}
+	return fmt.Errorf("cannot verify that the daemon is stopped at %s: %w", socket, err)
 }
 
 // --- helpers ---

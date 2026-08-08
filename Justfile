@@ -123,6 +123,11 @@ deny *args: build
 revoke *args: build
     @"{{ binary }}" revoke "$@"
 
+# Permanently delete daemon and/or client state.
+[group('daemon')]
+reset *args: build
+    @"{{ binary }}" reset "$@"
+
 # --- Client ---
 
 # Ask the daemon for a token, e.g. `just token --repo widget`.

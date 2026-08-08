@@ -26,6 +26,16 @@ import (
 	"github.com/asw101/tsapp/internal/server"
 )
 
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "tsapp-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 func TestSplitAll(t *testing.T) {
 	tests := []struct {
 		in   []string
@@ -65,7 +75,7 @@ func TestParsePermissions(t *testing.T) {
 }
 
 func TestListenUnixIsPrivateAndReplacesStaleSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sub", "admin.sock")
+	path := filepath.Join(shortTempDir(t), "sub", "admin.sock")
 
 	ln, err := listenUnix(path)
 	if err != nil {
@@ -204,6 +214,107 @@ func TestServeRequiresAppCredentials(t *testing.T) {
 func TestDefaultDirIsNamespaced(t *testing.T) {
 	if got := defaultDir("tsapp"); !strings.HasSuffix(got, "tsapp") {
 		t.Errorf("got %q, want it to end in the app name", got)
+	}
+}
+
+func TestResetRequiresConfirmation(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "daemon")
+	err := cmdReset([]string{"daemon", "--state-dir", dir})
+	if err == nil || !strings.Contains(err.Error(), "--yes") || !strings.Contains(err.Error(), dir) {
+		t.Fatalf("got %v, want the path and confirmation hint", err)
+	}
+}
+
+func TestResetDeletesSelectedState(t *testing.T) {
+	for _, target := range []string{"daemon", "client"} {
+		t.Run(target, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), target)
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte("state"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmdReset([]string{target, "--state-dir", dir, "--yes"}); err != nil {
+				t.Fatalf("cmdReset: %v", err)
+			}
+			if _, err := os.Stat(dir); !os.IsNotExist(err) {
+				t.Fatalf("state directory still exists: %v", err)
+			}
+		})
+	}
+}
+
+func TestResetAllDeletesBothStateDirectories(t *testing.T) {
+	root := t.TempDir()
+	daemonDir := filepath.Join(root, "daemon")
+	clientDir := filepath.Join(root, "client")
+	for _, dir := range []string{daemonDir, clientDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := cmdReset([]string{
+		"all",
+		"--daemon-state-dir", daemonDir,
+		"--client-state-dir", clientDir,
+		"--yes",
+	})
+	if err != nil {
+		t.Fatalf("cmdReset: %v", err)
+	}
+	for _, dir := range []string{daemonDir, clientDir} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("state directory %s still exists: %v", dir, err)
+		}
+	}
+}
+
+func TestResetRefusesWhileDaemonIsRunning(t *testing.T) {
+	dir := shortTempDir(t)
+	socket := filepath.Join(dir, "admin.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	err = cmdReset([]string{"daemon", "--state-dir", dir, "--yes"})
+	if err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("got %v, want a running-daemon error", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("state was removed despite a running daemon: %v", err)
+	}
+}
+
+func TestResetRejectsDangerousDirectories(t *testing.T) {
+	for _, dir := range []string{string(filepath.Separator), defaultDir("")} {
+		if _, err := safeResetDir(dir); err == nil {
+			t.Errorf("safeResetDir(%q): want an error", dir)
+		}
+	}
+}
+
+func TestResetRejectsSymlinkToProtectedDirectory(t *testing.T) {
+	config, err := os.UserConfigDir()
+	if err != nil {
+		t.Skipf("no user config directory: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "config")
+	if err := os.Symlink(config, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := safeResetDir(link); err == nil {
+		t.Errorf("safeResetDir(%q): want an error", link)
+	}
+}
+
+func TestResetAllRejectsAmbiguousStateDir(t *testing.T) {
+	err := cmdReset([]string{"all", "--state-dir", t.TempDir(), "--yes"})
+	if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Fatalf("got %v, want --state-dir to be rejected", err)
 	}
 }
 
