@@ -73,13 +73,42 @@ after that it asks for scopes and this daemon decides.
 Admin commands talk to the daemon over its Unix socket, so they work only from
 the host it runs on. That is deliberate: approving is an operator action, not
 something a tailnet client can reach.
+
+Exit codes from 'tsapp token', so a script need not read the message:
+  0  a token, on stdout
+  2  pending approval — retry once a human has approved it
+  3  denied by policy — retrying will not help
+  1  anything else
 `
+
+// Exit codes a script can branch on. Pending and denied want different
+// responses — retry versus stop — and telling them apart by parsing the
+// message would be worse for everyone.
+const (
+	exitError   = 1 // anything else: transport, configuration, upstream
+	exitPending = 2 // the scope needs a human to approve it
+	exitDenied  = 3 // refused by policy; retrying will not help
+)
+
+// exitCodeError carries the status `tsapp` should exit with.
+type exitCodeError struct {
+	code int
+	err  error
+}
+
+func (e *exitCodeError) Error() string { return e.err.Error() }
+func (e *exitCodeError) Unwrap() error { return e.err }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	if err := run(os.Args[1:]); err != nil {
+		code := exitError
+		var coded *exitCodeError
+		if errors.As(err, &coded) {
+			code = coded.code
+		}
 		fmt.Fprintln(os.Stderr, "tsapp: "+err.Error())
-		os.Exit(1)
+		os.Exit(code)
 	}
 }
 
@@ -476,20 +505,38 @@ func cmdToken(args []string) error {
 		fmt.Println(token.Token)
 		return nil
 
-	case http.StatusAccepted:
-		var status server.StatusResponse
-		_ = json.NewDecoder(resp.Body).Decode(&status)
-		return fmt.Errorf("pending approval (request %s) — run 'tsapp approve %s' on the daemon host",
-			status.RequestID, status.RequestID)
-
 	default:
 		var status server.StatusResponse
 		_ = json.NewDecoder(resp.Body).Decode(&status)
-		if status.Reason != "" {
-			return fmt.Errorf("%s: %s", status.Status, status.Reason)
-		}
-		return fmt.Errorf("server returned %s", resp.Status)
+		return tokenError(resp.StatusCode, resp.Status, status)
 	}
+}
+
+// tokenError turns a non-success response into an error carrying the exit code
+// a caller should branch on.
+func tokenError(code int, statusLine string, status server.StatusResponse) error {
+	switch code {
+	case http.StatusAccepted:
+		return &exitCodeError{code: exitPending, err: fmt.Errorf(
+			"pending approval (request %s) — run 'tsapp approve %s' on the daemon host",
+			status.RequestID, status.RequestID)}
+
+	case http.StatusForbidden:
+		return &exitCodeError{code: exitDenied, err: errors.New(reasonOr(status, "denied"))}
+
+	default:
+		return errors.New(reasonOr(status, "server returned "+statusLine))
+	}
+}
+
+func reasonOr(status server.StatusResponse, fallback string) string {
+	if status.Reason == "" {
+		return fallback
+	}
+	if status.Status == "" {
+		return status.Reason
+	}
+	return status.Status + ": " + status.Reason
 }
 
 func cmdWhoami(args []string) error {

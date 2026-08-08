@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"errors"
+
 	"github.com/asw101/tsapp/internal/app"
 	"github.com/asw101/tsapp/internal/policy"
 	"github.com/asw101/tsapp/internal/server"
@@ -517,5 +519,81 @@ func TestParseWithIDAllowsNoID(t *testing.T) {
 	id, err := parseWithID(fs, nil)
 	if err != nil || id != "" {
 		t.Errorf("got %q, %v; want empty and no error so the caller can report usage", id, err)
+	}
+}
+
+func TestTokenErrorCarriesTheRightExitCode(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     int
+		status   server.StatusResponse
+		wantExit int
+		wantText string
+	}{
+		{
+			name:     "pending is retryable",
+			code:     http.StatusAccepted,
+			status:   server.StatusResponse{Status: "pending", RequestID: "7c2a"},
+			wantExit: exitPending,
+			wantText: "7c2a",
+		},
+		{
+			name:     "denied is not",
+			code:     http.StatusForbidden,
+			status:   server.StatusResponse{Status: "denied", Reason: "scope exceeds the capability"},
+			wantExit: exitDenied,
+			wantText: "exceeds the capability",
+		},
+		{
+			// An upstream failure is neither a policy decision nor something
+			// approving would fix, so it stays a plain error.
+			name:     "upstream failure is a plain error",
+			code:     http.StatusBadGateway,
+			status:   server.StatusResponse{Status: "error", Reason: "github api: 500"},
+			wantExit: exitError,
+			wantText: "github api",
+		},
+		{
+			name:     "no reason falls back to the status line",
+			code:     http.StatusInternalServerError,
+			status:   server.StatusResponse{},
+			wantExit: exitError,
+			wantText: "500 Internal Server Error",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tokenError(tc.code, "500 Internal Server Error", tc.status)
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			if !strings.Contains(err.Error(), tc.wantText) {
+				t.Errorf("got %q, want it to mention %q", err, tc.wantText)
+			}
+
+			got := exitError
+			var coded *exitCodeError
+			if errors.As(err, &coded) {
+				got = coded.code
+			}
+			if got != tc.wantExit {
+				t.Errorf("got exit %d, want %d", got, tc.wantExit)
+			}
+		})
+	}
+}
+
+func TestExitCodesAreDistinct(t *testing.T) {
+	// Collapsing any two of these would put a script back to parsing English.
+	seen := map[int]bool{}
+	for _, code := range []int{exitError, exitPending, exitDenied} {
+		if seen[code] {
+			t.Fatalf("exit code %d is used twice", code)
+		}
+		seen[code] = true
+	}
+	if exitError != 1 {
+		t.Errorf("the generic failure should stay 1, got %d", exitError)
 	}
 }
