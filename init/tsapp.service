@@ -1,0 +1,70 @@
+[Unit]
+Description=tsapp — mints scoped GitHub App tokens for tailnet clients
+Documentation=https://github.com/asw101/_cloud_native_ai/tree/main/tsapp
+# The daemon joins the tailnet on start, so it wants routable networking first.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/tsapp serve \
+    --hostname=%p \
+    --state-dir=%S/%p \
+    --key=%d/app.pem
+
+# The App ID is not a secret; the key is. Put GH_APP_ID (and any other
+# non-secret settings) here.
+EnvironmentFile=/etc/tsapp/env
+
+# systemd mounts the key into a per-service tmpfs readable only by this unit,
+# so it is never readable by the service user at rest and never lands in the
+# state directory. Keep the source file root-owned and 0600.
+LoadCredential=app.pem:/etc/tsapp/app.pem
+
+# /var/lib/tsapp, created 0700 and owned by the service user. Holds the tsnet
+# node key and approvals.json, both of which must survive a restart.
+StateDirectory=%p
+StateDirectoryMode=0700
+
+User=tsapp
+Group=tsapp
+DynamicUser=no
+
+Restart=on-failure
+RestartSec=5s
+# Joining the tailnet on a cold start can take a moment.
+TimeoutStartSec=120
+
+# --- Hardening ---
+# The daemon needs: outbound TCP/UDP, its state directory, and a Unix socket.
+# Nothing else, and no privileges at all.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+# AF_NETLINK is required: tsnet enumerates interfaces and routes through it,
+# and without it startup fails with "netlinkrib: address family not supported".
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
