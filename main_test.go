@@ -14,8 +14,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -77,7 +80,7 @@ func TestParsePermissions(t *testing.T) {
 func TestListenUnixIsPrivateAndReplacesStaleSocket(t *testing.T) {
 	path := filepath.Join(shortTempDir(t), "sub", "admin.sock")
 
-	ln, err := listenUnix(path)
+	ln, err := listenUnix(path, "")
 	if err != nil {
 		t.Fatalf("listenUnix: %v", err)
 	}
@@ -97,11 +100,78 @@ func TestListenUnixIsPrivateAndReplacesStaleSocket(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatalf("simulate crash leftover: %v", err)
 	}
-	again, err := listenUnix(path)
+	again, err := listenUnix(path, "")
 	if err != nil {
 		t.Fatalf("listenUnix over a stale socket: %v", err)
 	}
 	again.Close()
+}
+
+// A named group is what lets an operator approve without root, so the widened
+// mode and the group ownership are both part of the contract. The test uses a
+// group this process already belongs to, since chown to an arbitrary group
+// needs privileges the suite does not have.
+func TestListenUnixWidensForAGroup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "admin.sock")
+	gid := os.Getgid()
+
+	ln, err := listenUnix(path, strconv.Itoa(gid))
+	if err != nil {
+		t.Fatalf("listenUnix: %v", err)
+	}
+	defer ln.Close()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o660 {
+		t.Errorf("got socket mode %o, want 660", perm)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("no Stat_t on this platform")
+	}
+	if int(st.Gid) != gid {
+		t.Errorf("got socket gid %d, want %d", st.Gid, gid)
+	}
+}
+
+func TestListenUnixRejectsAnUnknownGroup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "admin.sock")
+	ln, err := listenUnix(path, "no-such-group-here")
+	if err == nil {
+		ln.Close()
+		t.Fatal("listenUnix accepted a group that does not exist")
+	}
+	// Failing closed matters: a typo must not silently leave the socket at a
+	// mode the operator did not ask for.
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Error("socket left behind after a failed group lookup")
+	}
+}
+
+func TestLookupGIDAcceptsNamesAndNumbers(t *testing.T) {
+	gid := os.Getgid()
+	got, err := lookupGID(strconv.Itoa(gid))
+	if err != nil {
+		t.Fatalf("lookupGID(numeric): %v", err)
+	}
+	if got != gid {
+		t.Errorf("got gid %d, want %d", got, gid)
+	}
+
+	g, err := user.LookupGroupId(strconv.Itoa(gid))
+	if err != nil {
+		t.Skipf("no name for gid %d: %v", gid, err)
+	}
+	got, err = lookupGID(g.Name)
+	if err != nil {
+		t.Fatalf("lookupGID(%q): %v", g.Name, err)
+	}
+	if got != gid {
+		t.Errorf("got gid %d for %q, want %d", got, g.Name, gid)
+	}
 }
 
 // startAdmin serves the admin handler on a real Unix socket, which is how the
@@ -118,7 +188,7 @@ func startAdmin(t *testing.T) (*server.Server, string) {
 		Engine: &policy.Engine{Store: store},
 	}
 	socket := filepath.Join(dir, "admin.sock")
-	ln, err := listenUnix(socket)
+	ln, err := listenUnix(socket, "")
 	if err != nil {
 		t.Fatalf("listenUnix: %v", err)
 	}
@@ -267,6 +337,51 @@ func TestResetAllDeletesBothStateDirectories(t *testing.T) {
 	for _, dir := range []string{daemonDir, clientDir} {
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
 			t.Errorf("state directory %s still exists: %v", dir, err)
+		}
+	}
+}
+
+// No target is the common case — "clean up whatever this host is holding" —
+// so it must mean the same as an explicit "all" rather than an error.
+func TestResetWithoutATargetClearsEverything(t *testing.T) {
+	root := t.TempDir()
+	daemonDir := filepath.Join(root, "daemon")
+	clientDir := filepath.Join(root, "client")
+	for _, dir := range []string{daemonDir, clientDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := cmdReset([]string{
+		"--daemon-state-dir", daemonDir,
+		"--client-state-dir", clientDir,
+		"--yes",
+	})
+	if err != nil {
+		t.Fatalf("cmdReset: %v", err)
+	}
+	for _, dir := range []string{daemonDir, clientDir} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("state directory %s still exists: %v", dir, err)
+		}
+	}
+}
+
+// Without --yes it must still refuse, and name both paths: a bare `tsapp reset`
+// is the dry run people will lean on before committing to it.
+func TestResetWithoutATargetStillNeedsConfirmation(t *testing.T) {
+	root := t.TempDir()
+	daemonDir := filepath.Join(root, "daemon")
+	clientDir := filepath.Join(root, "client")
+
+	err := cmdReset([]string{"--daemon-state-dir", daemonDir, "--client-state-dir", clientDir})
+	if err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("got %v, want a confirmation hint", err)
+	}
+	for _, dir := range []string{daemonDir, clientDir} {
+		if !strings.Contains(err.Error(), dir) {
+			t.Errorf("error %q does not name %s", err, dir)
 		}
 	}
 }

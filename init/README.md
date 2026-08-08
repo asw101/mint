@@ -128,6 +128,79 @@ action.
 the tailnet before binding it, so until you visit the login URL every admin
 command reports `is 'tsapp serve' running on this host?` even though it is.
 
+### Dropping the TSAPP_SOCKET prefix
+
+The unit runs with `--state-dir=/var/lib/tsapp`, so the socket lands there,
+while the CLI looks in its own default state directory. Symlinking one to the
+other means admin commands need no environment variable:
+
+```sh
+sudo install -d -m 0700 /root/.config/tsapp
+sudo ln -sfn /var/lib/tsapp/admin.sock /root/.config/tsapp/admin.sock
+
+sudo tsapp pending          # no TSAPP_SOCKET
+```
+
+This changes no permissions — root reached the socket already. Note the
+symlink dangles while the daemon is down, and the "is `tsapp serve` running"
+error then names the *symlink* path rather than the real one.
+
+### Dropping the sudo as well
+
+`--socket-group` widens the socket from `0600` to `0660` owned by a group, so
+its members approve as themselves. Both halves are needed — a group-writable
+socket inside a `0700` directory is still unreachable, because the directory
+walk fails first:
+
+```ini
+# /etc/systemd/system/tsapp.service.d/10-admin-group.conf
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/tsapp serve \
+    --hostname=%p \
+    --state-dir=%S/%p \
+    --key=%d/app.pem \
+    --socket-group=tsapp
+
+StateDirectoryMode=0750
+```
+
+The empty `ExecStart=` is required: without it systemd runs a second command
+alongside the unit's original rather than replacing it.
+
+```sh
+sudo systemctl daemon-reload && sudo systemctl restart tsapp
+sudo usermod -aG tsapp <operator>
+```
+
+Then each operator symlinks the socket into their own default path:
+
+```sh
+mkdir -p ~/.config/tsapp
+ln -sfn /var/lib/tsapp/admin.sock ~/.config/tsapp/admin.sock
+tsapp pending               # no sudo, no TSAPP_SOCKET
+```
+
+Confirm the daemon agrees, and that the directory came along:
+
+```sh
+sudo journalctl -u tsapp -n 1     # ... admin /var/lib/tsapp/admin.sock (group tsapp)
+ls -ld /var/lib/tsapp             # drwxr-x--- tsapp tsapp
+ls -l /var/lib/tsapp/admin.sock   # srw-rw---- tsapp tsapp
+```
+
+**Group membership only applies to new login sessions.** The shell you ran
+`usermod` from still has the old set, and `tsapp pending` there fails with
+`permission denied` on the socket — log out and back in, or test with
+`sudo -u <operator> -g tsapp tsapp pending`.
+
+**Weigh this properly.** The admin socket has no authentication beyond
+filesystem permissions, so the group is the power to approve any scope the
+tailnet policy permits — the same reach as sudo on this host, minus the audit
+trail sudo leaves. Put operators in it. Do not put service accounts, CI
+runners, or anything an agent runs as in it: the whole design assumes approving
+costs a human, and this group is exactly that cost.
+
 ## What systemd is doing for you
 
 **`LoadCredential=app.pem:/etc/tsapp/app.pem`** — the key is mounted into a

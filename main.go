@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -44,14 +45,18 @@ Usage:
   tsapp approve <id> [--ttl 30d]   approve a pending request
   tsapp deny <id>                  drop a pending request
   tsapp revoke <id>                revoke an approval
-  tsapp reset daemon --yes         delete daemon identity and approvals
-  tsapp reset client --yes         delete client identity
-  tsapp reset all --yes            delete daemon and client state
+  tsapp reset --yes                delete all local state
+  tsapp reset daemon --yes         narrow it to the daemon identity and approvals
+  tsapp reset client --yes         narrow it to the client identity
 
 serve flags:
   --hostname NAME     tailnet name to claim         (default tsapp)
   --state-dir PATH    tsnet state and approvals     (default OS config dir/tsapp)
   --socket PATH       admin socket                  (default <state-dir>/admin.sock)
+  --socket-group G    group that may use the admin socket, name or gid
+                      (env TSAPP_SOCKET_GROUP). Widens it from 0600 to 0660,
+                      so members approve without root. The socket has no other
+                      authentication — grant it as you would sudo
   --port N            tailnet listen port           (default 8080)
   --tls               serve HTTPS on :443 instead of HTTP; needs HTTPS
                       Certificates enabled for the tailnet. No cert to supply
@@ -215,6 +220,8 @@ func cmdServe(args []string) error {
 	hostname := fs.String("hostname", "tsapp", "tailnet name to claim")
 	stateDir := fs.String("state-dir", defaultDir("tsapp"), "tsnet state and approvals")
 	socket := fs.String("socket", "", "admin socket path")
+	socketGroup := fs.String("socket-group", envOr("TSAPP_SOCKET_GROUP", ""),
+		"group allowed to use the admin socket (name or gid); widens it to 0660")
 	port := fs.Int("port", 8080, "tailnet listen port")
 	useTLS := fs.Bool("tls", false, "serve HTTPS over the tailnet")
 	appID := fs.String("app-id", os.Getenv("GH_APP_ID"), "GitHub App ID")
@@ -310,13 +317,17 @@ func cmdServe(args []string) error {
 	}
 	defer tailnetListener.Close()
 
-	adminListener, err := listenUnix(*socket)
+	adminListener, err := listenUnix(*socket, *socketGroup)
 	if err != nil {
 		return err
 	}
 	defer adminListener.Close()
 
-	log.Printf("tailnet %s%s, admin %s", *hostname, addr, *socket)
+	if *socketGroup != "" {
+		log.Printf("tailnet %s%s, admin %s (group %s)", *hostname, addr, *socket, *socketGroup)
+	} else {
+		log.Printf("tailnet %s%s, admin %s", *hostname, addr, *socket)
+	}
 
 	errs := make(chan error, 2)
 	go func() { errs <- http.Serve(tailnetListener, handler.TailnetHandler()) }()
@@ -332,7 +343,13 @@ func cmdServe(args []string) error {
 }
 
 // listenUnix binds the admin socket, replacing a stale one left by a crash.
-func listenUnix(path string) (net.Listener, error) {
+//
+// An empty group keeps the socket 0600, reachable by the service user and root
+// alone. Naming a group widens it to 0660 owned by that group, which is what
+// lets an operator approve without sudo — and is a real widening, since the
+// socket has no authentication beyond these bits. The directory must be
+// traversable by the group too, or this achieves nothing.
+func listenUnix(path, group string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create socket dir: %w", err)
 	}
@@ -343,12 +360,42 @@ func listenUnix(path string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on admin socket: %w", err)
 	}
+	mode := os.FileMode(0o600)
+	if group != "" {
+		gid, err := lookupGID(group)
+		if err != nil {
+			ln.Close()
+			return nil, err
+		}
+		if err := os.Chown(path, -1, gid); err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("give admin socket to group %q: %w", group, err)
+		}
+		mode = 0o660
+	}
 	// Filesystem permissions are the only thing guarding the admin surface.
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := os.Chmod(path, mode); err != nil {
 		ln.Close()
 		return nil, fmt.Errorf("restrict admin socket: %w", err)
 	}
 	return ln, nil
+}
+
+// lookupGID resolves a group name or a numeric gid. A numeric value is taken
+// as-is so a unit can name a gid that has no entry on this host.
+func lookupGID(group string) (int, error) {
+	if gid, err := strconv.Atoi(group); err == nil {
+		return gid, nil
+	}
+	g, err := user.LookupGroup(group)
+	if err != nil {
+		return 0, fmt.Errorf("resolve --socket-group %q: %w", group, err)
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return 0, fmt.Errorf("group %q has a non-numeric gid %q", group, g.Gid)
+	}
+	return gid, nil
 }
 
 type githubMinter struct {
@@ -726,12 +773,15 @@ func adminDialError(socket string, err error) error {
 // --- reset ---
 
 func cmdReset(args []string) error {
-	if len(args) == 0 {
-		return errors.New("usage: tsapp reset daemon|client|all --yes")
-	}
-	target := args[0]
-	if target != "daemon" && target != "client" && target != "all" {
-		return fmt.Errorf("unknown reset target %q (want daemon, client, or all)", target)
+	// "Clean up everything this host holds" is the case people actually want,
+	// so it is the default: a bare `tsapp reset` covers daemon and client
+	// alike, and a target narrows it when only one of them is in the way.
+	target := "all"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		target, args = args[0], args[1:]
+		if target != "daemon" && target != "client" && target != "all" {
+			return fmt.Errorf("unknown reset target %q (want daemon, client, or all)", target)
+		}
 	}
 
 	fs := flag.NewFlagSet("reset "+target, flag.ContinueOnError)
@@ -752,7 +802,7 @@ func cmdReset(args []string) error {
 		fs.StringVar(&socket, "socket", "", "daemon admin socket used to check whether it is running")
 	}
 	yes := fs.Bool("yes", false, "confirm permanent deletion")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
