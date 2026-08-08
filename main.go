@@ -50,7 +50,8 @@ serve flags:
   --state-dir PATH    tsnet state and approvals     (default ~/.config/tsapp)
   --socket PATH       admin socket                  (default <state-dir>/admin.sock)
   --port N            tailnet listen port           (default 8080)
-  --tls               serve HTTPS instead of HTTP over the tailnet
+  --tls               serve HTTPS on :443 instead of HTTP; needs HTTPS
+                      Certificates enabled for the tailnet. No cert to supply
   --app-id ID         GitHub App ID                 (env GH_APP_ID)
   --key PATH          App private key PEM           (env GH_APP_KEY_FILE)
   --installation ID   installation to mint from     (env GH_APP_INSTALLATION_ID)
@@ -248,15 +249,26 @@ func cmdServe(args []string) error {
 	var tailnetListener net.Listener
 	addr := fmt.Sprintf(":%d", *port)
 	if *useTLS {
+		// The certificate comes from Tailscale, for this node's MagicDNS name.
+		// There is no key or cert file to supply, and the first request after
+		// startup can take thirty seconds or more while LetsEncrypt issues it.
+		log.Print("serving HTTPS; the first request may block while the certificate is issued")
 		tailnetListener, err = srv.ListenTLS("tcp", ":443")
+		if err != nil {
+			return fmt.Errorf("serve HTTPS on the tailnet: %w\n"+
+				"  Tailscale issues the certificate for this node's MagicDNS name, so there is\n"+
+				"  nothing to supply — but HTTPS Certificates must be enabled for the tailnet\n"+
+				"  (admin console, DNS page). Or drop --tls: tailnet traffic is already\n"+
+				"  WireGuard-encrypted, which is why plain HTTP is the default.", err)
+		}
 		addr = ":443"
 	} else {
 		// Plain HTTP is safe here: everything on the tailnet is already
 		// WireGuard-encrypted, and this avoids the LetsEncrypt round trip.
 		tailnetListener, err = srv.Listen("tcp", addr)
-	}
-	if err != nil {
-		return fmt.Errorf("listen on tailnet: %w", err)
+		if err != nil {
+			return fmt.Errorf("listen on tailnet: %w", err)
+		}
 	}
 	defer tailnetListener.Close()
 
