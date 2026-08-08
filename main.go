@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -35,6 +36,8 @@ Usage:
   tsapp serve [flags]              run the daemon
   tsapp token [flags]              ask the daemon for a token
   tsapp whoami [flags]             show what the daemon sees you as
+
+  tsapp version                    print the version and how it was built
 
   tsapp pending                    list requests awaiting approval
   tsapp approvals                  list current approvals
@@ -101,12 +104,69 @@ func run(args []string) error {
 		return cmdAdminByID(args[1:], "deny", "/v1/deny")
 	case "revoke":
 		return cmdAdminByID(args[1:], "revoke", "/v1/revoke")
+	case "version", "--version", "-version":
+		fmt.Print(versionReport())
+		return nil
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q (try 'tsapp help')", args[0])
 	}
+}
+
+// --- version ---
+
+// version is stamped at build time with -ldflags "-X main.version=...".
+// Unstamped builds fall back to the VCS information the toolchain records.
+var version = ""
+
+// versionReport describes the binary well enough to tell two of them apart:
+// which release, which commit, and whether the tree was dirty when it was
+// built. A binary that cannot say which one it is invites the wrong bug report.
+func versionReport() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "tsapp %s\n", versionString())
+
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return b.String()
+	}
+	settings := map[string]string{}
+	for _, s := range info.Settings {
+		settings[s.Key] = s.Value
+	}
+	if revision := settings["vcs.revision"]; revision != "" {
+		state := "clean"
+		if settings["vcs.modified"] == "true" {
+			state = "dirty"
+		}
+		fmt.Fprintf(&b, "  commit  %s (%s)\n", short(revision), state)
+	}
+	if when := settings["vcs.time"]; when != "" {
+		fmt.Fprintf(&b, "  built   %s\n", when)
+	}
+	fmt.Fprintf(&b, "  go      %s %s/%s\n", info.GoVersion, settings["GOOS"], settings["GOARCH"])
+	return b.String()
+}
+
+func versionString() string {
+	if version != "" {
+		return version
+	}
+	// A binary installed with "go install" carries its module version here;
+	// one built from a working tree usually reports "(devel)".
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+		return info.Main.Version
+	}
+	return "unknown"
+}
+
+func short(revision string) string {
+	if len(revision) > 12 {
+		return revision[:12]
+	}
+	return revision
 }
 
 // --- serve ---

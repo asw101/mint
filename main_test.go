@@ -432,3 +432,48 @@ func TestDoWhileSettlingHonoursContextCancellation(t *testing.T) {
 		t.Fatal("want an error once the context is cancelled")
 	}
 }
+
+func TestVersionReportNamesTheBinary(t *testing.T) {
+	got := versionReport()
+	if !strings.HasPrefix(got, "tsapp ") {
+		t.Errorf("got %q, want it to start with the program name", got)
+	}
+	// Built by `go test` from a checkout, so the toolchain stamps VCS info
+	// even though -ldflags did not run.
+	if !strings.Contains(got, "go1.") {
+		t.Errorf("got %q, want the Go version", got)
+	}
+}
+
+func TestVersionStringPrefersTheStampedValue(t *testing.T) {
+	original := version
+	t.Cleanup(func() { version = original })
+
+	version = "tsapp/v9.9.9"
+	if got := versionString(); got != "tsapp/v9.9.9" {
+		t.Errorf("got %q, want the stamped value", got)
+	}
+
+	// Unstamped falls back to build info rather than claiming a version.
+	version = ""
+	if got := versionString(); got == "tsapp/v9.9.9" {
+		t.Error("stale stamped value leaked through")
+	}
+}
+
+func TestVersionIsReachableByEveryName(t *testing.T) {
+	for _, name := range []string{"version", "--version", "-version"} {
+		if err := run([]string{name}); err != nil {
+			t.Errorf("run(%q): %v", name, err)
+		}
+	}
+}
+
+func TestShortRevision(t *testing.T) {
+	if got := short("c2bf8779b9204e6235df60f4f6337f0d8d9b0fcf"); got != "c2bf8779b920" {
+		t.Errorf("got %q, want 12 chars", got)
+	}
+	if got := short("abc"); got != "abc" {
+		t.Errorf("got %q, want a short revision left alone", got)
+	}
+}
