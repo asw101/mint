@@ -93,6 +93,19 @@ tailnet node tsapp.your-tailnet.ts.net. ([100.x.y.z ...])
 tailnet tsapp:8080, admin /var/lib/tsapp/admin.sock
 ```
 
+**Check that name.** The unit asks for the hostname `tsapp`, but Tailscale
+appends a suffix if something already holds it — a previous daemon, or a stale
+node you have not removed — and you get `tsapp-1`. Clients default to
+`http://tsapp:8080`, so they would then reach the *other* node:
+
+```
+tailnet node tsapp-1.your-tailnet.ts.net.   <- not what clients will dial
+```
+
+Remove the stale node from the console and restart to reclaim the name, or
+point clients at the real one with `--server http://tsapp-1:8080`. The name is
+fixed at registration, so restarting alone will not reclaim it.
+
 `Restart=on-failure` means it keeps retrying, so an unauthenticated daemon is
 not a failed one — it just sits there. Check `systemctl show tsapp -p NRestarts`
 if you suspect a loop.
@@ -143,6 +156,17 @@ tsnet: route ip+net: netlinkrib: address family not supported by protocol
 
 The App key loads *before* that point, so `minting from installation …`
 appearing in the log does not mean the daemon is healthy.
+
+`ProcSubset=pid` is deliberately **not** set, for a related reason: it hides
+`/proc/net`, and tsnet reads `/proc/net/route` to enumerate interfaces. The
+daemon still starts without it, but logs
+
+```
+interfaces: failed to read /proc/net/route: open /proc/net/route: no such file or directory
+```
+
+and works from a poorer picture of the host's networking. A warning rather than
+a failure is the worse kind of hardening bug — it looks fine.
 
 ## Verifying the unit
 

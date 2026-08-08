@@ -46,7 +46,10 @@ ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectProc=invisible
-ProcSubset=pid
+# ProcSubset=pid is deliberately NOT set: it hides /proc/net, and tsnet reads
+# /proc/net/route to enumerate interfaces. It still starts without it, but logs
+# "interfaces: failed to read /proc/net/route" and works from a poorer picture
+# of the host's networking.
 ProtectClock=yes
 ProtectHostname=yes
 ProtectKernelLogs=yes
