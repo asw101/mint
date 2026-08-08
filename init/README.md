@@ -27,10 +27,50 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now tsapp.service
 ```
 
-## First start
+## Authenticating the node
 
-The daemon joins the tailnet on start and waits to be authenticated. Watch for
-the URL:
+The node must be authenticated **once**. After that its identity is in
+`/var/lib/tsapp/tsnet/tailscaled.state` and it reconnects on its own; the auth
+key is not reused, and is ignored entirely unless `TSNET_FORCE_LOGIN=1`.
+
+There are two ways, and for a service the first is better.
+
+### With an auth key (recommended)
+
+A **tagged, pre-approved** key removes every console step: the node comes up
+already carrying its tag, so there is nothing to approve and nothing to tag by
+hand — which also means the daemon is usable the moment systemd starts it,
+rather than when someone next reads the journal.
+
+In the Tailscale console, **Settings → Keys → Generate auth key**:
+
+| Setting | Value |
+| --- | --- |
+| Reusable | no — one daemon, one key |
+| Ephemeral | **no** — an ephemeral node is removed when it disconnects |
+| Pre-approved | yes, if device approval is on for the tailnet |
+| Tags | **`tag:tsapp`** |
+
+Then add it to the environment file and restart:
+
+```sh
+printf 'TS_AUTHKEY=tskey-auth-...\n' | sudo tee -a /etc/tsapp/env >/dev/null
+sudo systemctl restart tsapp
+```
+
+tsnet reads `TS_AUTHKEY` from the environment at first start. Once the node is
+enrolled the value is dead weight — **remove it from the file afterwards**,
+since an unused auth key in a config file is a credential you are not thinking
+about. Keys expire on their own (90 days by default), but that is a backstop,
+not a plan.
+
+Ephemeral is worth being deliberate about: it is right for short-lived agent
+clients that should disappear, and wrong for a daemon, which would vanish from
+your tailnet on every restart and take its ACL tag with it.
+
+### Interactively
+
+Leave `TS_AUTHKEY` unset and the daemon waits, printing a URL. Watch for it:
 
 ```sh
 sudo journalctl -u tsapp -f
@@ -43,8 +83,8 @@ To start this tsnet server ... go to: https://login.tailscale.com/a/...
 ```
 
 Visit it, then in the Tailscale console approve the node and give it
-**`tag:tsapp`**. The unit claims the hostname `tsapp` (from `%p`), so clients
-need no `--server` override.
+**`tag:tsapp`** by hand. The unit claims the hostname `tsapp` (from `%p`), so
+clients need no `--server` override.
 
 It logs its tailnet name once it is in:
 
