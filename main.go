@@ -596,26 +596,53 @@ func cmdApprove(args []string) error {
 	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
 	socket := adminSocketFlag(fs)
 	ttl := fs.String("ttl", "", "expire the approval after this long, e.g. 720h (default never)")
-	if err := fs.Parse(args); err != nil {
+	id, err := parseWithID(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if id == "" {
 		return errors.New("usage: tsapp approve <request-id> [--ttl 720h]")
 	}
-	body, _ := json.Marshal(map[string]string{"id": fs.Arg(0), "ttl": *ttl})
+	body, _ := json.Marshal(map[string]string{"id": id, "ttl": *ttl})
 	return adminPost(*socket, "/v1/approve", body)
+}
+
+// parseWithID parses flags that may appear either side of the single
+// positional argument.
+//
+// The flag package stops at the first non-flag argument, so "approve ID --ttl
+// 720h" would otherwise treat --ttl as a second positional and fail — which is
+// exactly the form the usage text documents. Parsing in rounds accepts both
+// orders.
+func parseWithID(fs *flag.FlagSet, args []string) (string, error) {
+	var id string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return "", err
+		}
+		rest = fs.Args()
+		if len(rest) == 0 {
+			return id, nil
+		}
+		if id != "" {
+			return "", fmt.Errorf("unexpected argument %q", rest[0])
+		}
+		id, rest = rest[0], rest[1:]
+	}
 }
 
 func cmdAdminByID(args []string, name, path string) error {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	socket := adminSocketFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	id, err := parseWithID(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if id == "" {
 		return fmt.Errorf("usage: tsapp %s <id>", name)
 	}
-	body, _ := json.Marshal(map[string]string{"id": fs.Arg(0)})
+	body, _ := json.Marshal(map[string]string{"id": id})
 	return adminPost(*socket, path, body)
 }
 

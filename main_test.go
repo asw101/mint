@@ -7,7 +7,9 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -475,5 +477,45 @@ func TestShortRevision(t *testing.T) {
 	}
 	if got := short("abc"); got != "abc" {
 		t.Errorf("got %q, want a short revision left alone", got)
+	}
+}
+
+func TestParseWithIDAcceptsFlagsEitherSide(t *testing.T) {
+	// "approve ID --ttl 720h" is the form the usage text documents, and the
+	// flag package stops at the first non-flag argument, so it used to fail.
+	for _, args := range [][]string{
+		{"7c2a", "--ttl", "720h"},
+		{"--ttl", "720h", "7c2a"},
+		{"--ttl=720h", "7c2a"},
+		{"7c2a", "--ttl=720h"},
+	} {
+		fs := flag.NewFlagSet("approve", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		ttl := fs.String("ttl", "", "")
+		id, err := parseWithID(fs, args)
+		if err != nil {
+			t.Errorf("parseWithID(%v): %v", args, err)
+			continue
+		}
+		if id != "7c2a" || *ttl != "720h" {
+			t.Errorf("parseWithID(%v) = %q with ttl %q", args, id, *ttl)
+		}
+	}
+}
+
+func TestParseWithIDRejectsASecondPositional(t *testing.T) {
+	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if _, err := parseWithID(fs, []string{"one", "two"}); err == nil {
+		t.Error("want an error for a second positional argument")
+	}
+}
+
+func TestParseWithIDAllowsNoID(t *testing.T) {
+	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	id, err := parseWithID(fs, nil)
+	if err != nil || id != "" {
+		t.Errorf("got %q, %v; want empty and no error so the caller can report usage", id, err)
 	}
 }
