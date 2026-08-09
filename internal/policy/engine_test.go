@@ -411,3 +411,43 @@ func TestDeniedUnscopedRequestExplainsItself(t *testing.T) {
 		t.Errorf("reason %q should say how to fix it", got.Reason)
 	}
 }
+
+func TestUnscopedRequestIsDeniedRatherThanQueued(t *testing.T) {
+	// Queuing it was the trap: Approve copies the request's scope, so the
+	// approval would carry an empty repository list and cover nothing. The
+	// client would be approved and still denied, forever.
+	e := newTestEngine(t)
+	id := caller(Grant{Repos: []string{AllRepos}})
+
+	got, err := e.Evaluate(id, Scope{})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if got.Outcome != Denied {
+		t.Fatalf("got %v (%s), want denied even under a wildcard ceiling", got.Outcome, got.Reason)
+	}
+	if !strings.Contains(got.Reason, AllRepos) {
+		t.Errorf("reason %q should point at --repo %q", got.Reason, AllRepos)
+	}
+	if len(e.Store.Pending()) != 0 {
+		t.Errorf("nothing should have been queued, got %d pending", len(e.Store.Pending()))
+	}
+}
+
+func TestWildcardRequestIsStillQueuedForApproval(t *testing.T) {
+	// The deliberate form of the same reach stays available: highly privileged,
+	// but asked for out loud and still gated on a human.
+	e := newTestEngine(t)
+	id := caller(Grant{Repos: []string{AllRepos}})
+
+	got, err := e.Evaluate(id, Scope{Repos: []string{AllRepos}})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if got.Outcome != Pending {
+		t.Fatalf("got %v (%s), want pending", got.Outcome, got.Reason)
+	}
+	if !CoveredByAny([]Grant{{Repos: got.Scope.Repos, Permissions: got.Scope.Permissions}}, got.Scope) {
+		t.Error("the approval this becomes should cover the request it came from")
+	}
+}

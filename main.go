@@ -68,7 +68,9 @@ serve flags:
 
 token flags:
   --server URL        daemon address                (default http://tsapp:8080)
-  --repo NAME         repository, repeatable and comma-separated
+  --repo NAME         repository, repeatable and comma-separated. Required;
+                      pass --repo '*' to ask for every repository the
+                      installation can reach, which still needs approval
   --permission k=v    narrow a permission, repeatable
   --hostname NAME     tailnet name for this client  (default tsapp-client)
   --state-dir PATH    tsnet state for this client   (default OS config dir/tsapp-client)
@@ -404,8 +406,17 @@ type githubMinter struct {
 }
 
 func (m *githubMinter) Mint(ctx context.Context, scope policy.Scope) (*app.Token, error) {
+	scope = scope.Normalize()
+
+	repos := scope.Repos
+	if scope.HasAllRepos() {
+		// The API reads an omitted repositories field as the installation's
+		// whole reach, which is exactly what the wildcard asks for. Sending
+		// "*" through would be looked up as a repository name and rejected.
+		repos = nil
+	}
 	return m.client.CreateToken(ctx, m.installationID, app.TokenRequest{
-		Repositories: scope.Normalize().Repos,
+		Repositories: repos,
 		Permissions:  scope.Permissions,
 	})
 }

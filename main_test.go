@@ -823,3 +823,69 @@ func TestExitCodesAreDistinct(t *testing.T) {
 		t.Errorf("the generic failure should stay 1, got %d", exitError)
 	}
 }
+
+// mintBody returns the JSON the minter actually sent to the API, so a test can
+// tell an omitted repositories field from an empty or literal one.
+func mintBody(t *testing.T, scope policy.Scope) map[string]any {
+	t.Helper()
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode token request: %v", err)
+		}
+		fmt.Fprint(w, `{"token":"ghs_example","expires_at":"2026-08-09T23:00:00Z"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	minter := &githubMinter{
+		client:         &app.Client{AppID: "1234567", Signer: testSigner(t), BaseURL: srv.URL, HTTP: srv.Client()},
+		installationID: 89012345,
+	}
+	if _, err := minter.Mint(context.Background(), scope); err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	return body
+}
+
+func TestMintOmitsRepositoriesForTheWildcard(t *testing.T) {
+	// "*" is a grant vocabulary word, not a repository. Sending it verbatim
+	// would have GitHub look up a repo by that name and reject the mint.
+	body := mintBody(t, policy.Scope{Repos: []string{policy.AllRepos}})
+
+	if _, ok := body["repositories"]; ok {
+		t.Errorf("repositories should be omitted for the wildcard, got %v", body["repositories"])
+	}
+}
+
+func TestMintWidensWhenTheWildcardAppearsBesideNames(t *testing.T) {
+	// The wildcard already covers the named repositories, so narrowing to them
+	// would mint less than was approved.
+	body := mintBody(t, policy.Scope{Repos: []string{"_cloud_native_ai", policy.AllRepos}})
+
+	if _, ok := body["repositories"]; ok {
+		t.Errorf("the wildcard should win, got repositories %v", body["repositories"])
+	}
+}
+
+func TestMintNamesTheRepositoriesItWasGiven(t *testing.T) {
+	body := mintBody(t, policy.Scope{Repos: []string{"justfiles", "_cloud_native_ai"}})
+
+	got, _ := json.Marshal(body["repositories"])
+	if string(got) != `["_cloud_native_ai","justfiles"]` {
+		t.Errorf("got repositories %s, want the normalized pair", got)
+	}
+}
+
+func TestWildcardRequestRoundTripsThroughAnApproval(t *testing.T) {
+	// The path that was broken end to end: ask for "*", get approved, and have
+	// the resulting grant cover the request it came from.
+	req := policy.Scope{Repos: []string{policy.AllRepos}}
+	stored := policy.Grant{Repos: req.Repos, Permissions: req.Permissions}
+
+	if !policy.CoveredByAny([]policy.Grant{stored}, req) {
+		t.Fatal("an approval minted from a wildcard request should cover it")
+	}
+	if _, ok := mintBody(t, req)["repositories"]; ok {
+		t.Error("and it should mint against the whole installation")
+	}
+}

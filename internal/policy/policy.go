@@ -53,6 +53,21 @@ type Grant struct {
 // IsZero reports whether the scope asks for nothing.
 func (s Scope) IsZero() bool { return len(s.Repos) == 0 && len(s.Permissions) == 0 }
 
+// HasAllRepos reports whether the scope names the AllRepos wildcard, which asks
+// for every repository the installation can reach rather than a named set.
+//
+// A request may name it, unlike leaving the repositories empty: the wildcard is
+// deliberate and still has to clear the ACL ceiling and an approval, whereas an
+// omission is the same reach asked for by accident.
+func (s Scope) HasAllRepos() bool {
+	for _, r := range s.Repos {
+		if strings.TrimSpace(r) == AllRepos {
+			return true
+		}
+	}
+	return false
+}
+
 // SplitRepo accepts either "owner/name" or a bare "name" and returns the two
 // parts, with an empty owner when none was given.
 func SplitRepo(s string) (owner, name string, err error) {

@@ -125,6 +125,21 @@ func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 	// the grants both use.
 	scope = scope.Normalize()
 
+	// A request naming no repositories asks for the installation's whole reach
+	// without saying so, and queuing it would be a trap: Store.Approve records
+	// the request's own scope, so the approval comes back with an empty
+	// repository list, which covers nothing. The client would be approved and
+	// still denied. Ask for the reach explicitly instead.
+	if len(scope.Repos) == 0 {
+		return Decision{
+			Outcome: Denied,
+			Scope:   scope,
+			Reason: fmt.Sprintf(
+				"no repositories named; pass --repo NAME, or --repo %q for every repository the installation can reach",
+				AllRepos),
+		}, nil
+	}
+
 	if len(id.Grants) == 0 {
 		return Decision{
 			Outcome: Denied,
@@ -188,22 +203,18 @@ func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 	}, nil
 }
 
-// explainCeilingMiss adds a hint for the two ways a request can exceed a grant
-// that looks like it should cover it.
+// explainCeilingMiss adds a hint for the way a request can exceed a grant that
+// looks like it should cover it.
+//
+// The unscoped case no longer reaches here: Evaluate denies a request naming no
+// repositories before the ceiling is consulted.
 func explainCeilingMiss(grants []Grant, scope Scope) string {
 	restrictsPermissions := false
-	wildcard := false
 	for _, g := range grants {
 		if len(g.Permissions) > 0 {
 			restrictsPermissions = true
+			break
 		}
-		if g.hasWildcard() {
-			wildcard = true
-		}
-	}
-	if len(scope.Repos) == 0 && !wildcard {
-		return " (the request named no repositories, which means every repository the installation can reach;" +
-			" name them with --repo, or grant \"repos\": [\"*\"])"
 	}
 	if len(scope.Permissions) == 0 && restrictsPermissions {
 		// Reachable only when no grant covers the repositories, since a
