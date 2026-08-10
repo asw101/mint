@@ -17,6 +17,7 @@ import (
 
 	"github.com/asw101/tsapp/internal/app"
 	"github.com/asw101/tsapp/internal/policy"
+	"github.com/asw101/tsapp/internal/wormhole"
 )
 
 var testTime = time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
@@ -26,6 +27,22 @@ var testTime = time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
 type fakeIdentifier struct {
 	resp *apitype.WhoIsResponse
 	err  error
+}
+
+type fakePeerResolver struct {
+	peers map[string]ResolvedPeer
+	err   error
+}
+
+func (f fakePeerResolver) ResolvePeer(_ context.Context, name string) (ResolvedPeer, error) {
+	if f.err != nil {
+		return ResolvedPeer{}, f.err
+	}
+	peer, ok := f.peers[name]
+	if !ok {
+		return ResolvedPeer{}, ErrPeerNotFound
+	}
+	return peer, nil
 }
 
 func (f fakeIdentifier) WhoIs(context.Context, string) (*apitype.WhoIsResponse, error) {
@@ -78,16 +95,27 @@ func newTestServer(t *testing.T, who *apitype.WhoIsResponse, minter Minter) *Ser
 		t.Fatalf("Open: %v", err)
 	}
 	n := 0
-	return &Server{
+	mailbox := wormhole.New()
+	mailbox.SetClock(func() time.Time { return testTime })
+	mailbox.SetIDGenerator(func() (string, error) { n++; return fmt.Sprintf("%032x", n), nil })
+	s := &Server{
 		Store: store,
 		Engine: &policy.Engine{
 			Store: store,
 			Now:   func() time.Time { return testTime },
 			NewID: func() (string, error) { n++; return fmt.Sprintf("req%d", n), nil },
 		},
-		Who:    fakeIdentifier{resp: who},
-		Minter: minter,
+		Who:      fakeIdentifier{resp: who},
+		Minter:   minter,
+		Wormhole: mailbox,
+		Peers: fakePeerResolver{peers: map[string]ResolvedPeer{
+			"node-1": {NodeID: "node-1", NodeName: "node-1.example.ts.net", Tags: []string{"tag:agent"}},
+			"node-2": {NodeID: "node-2", NodeName: "node-2.example.ts.net", Tags: []string{"tag:agent"}},
+			"sender": {NodeID: "sender", NodeName: "sender.example.ts.net", Tags: []string{"tag:admin"}},
+		}},
 	}
+	mailbox.SetEventSink(s.logWormholeEvent)
+	return s
 }
 
 func postToken(t *testing.T, s *Server, body TokenRequest) *httptest.ResponseRecorder {
@@ -364,6 +392,22 @@ func TestDropRemovesTheCallersRecordsAndNobodyElses(t *testing.T) {
 			s := newTestServer(t, whoIs(t, "node-1", policy.Grant{Repos: []string{"one"}}), &fakeMinter{})
 			seedNode(t, s, "node-1")
 			seedNode(t, s, "node-2")
+			addressed := []byte("addressed to node-1")
+			sent := []byte("sent by node-1")
+			if _, err := s.Wormhole.Put(
+				wormhole.Peer{NodeID: "node-2", NodeName: "node-2.example.ts.net"},
+				wormhole.Peer{NodeID: "node-1", NodeName: "node-1.example.ts.net"},
+				"addressed", addressed, wormhole.DefaultTTL, false,
+			); err != nil {
+				t.Fatalf("seed addressed wormhole: %v", err)
+			}
+			if _, err := s.Wormhole.Put(
+				wormhole.Peer{NodeID: "node-1", NodeName: "node-1.example.ts.net"},
+				wormhole.Peer{NodeID: "node-2", NodeName: "node-2.example.ts.net"},
+				"sent", sent, wormhole.DefaultTTL, false,
+			); err != nil {
+				t.Fatalf("seed sent wormhole: %v", err)
+			}
 
 			rec := postDrop(t, s, tc.body)
 			if rec.Code != http.StatusOK {
@@ -376,13 +420,22 @@ func TestDropRemovesTheCallersRecordsAndNobodyElses(t *testing.T) {
 			if dropped.NodeID != "node-1" {
 				t.Errorf("dropped node %q, want the calling node node-1", dropped.NodeID)
 			}
-			if dropped.ApprovalsDropped != 1 || dropped.PendingDropped != 1 {
-				t.Errorf("got %+v, want one approval and one pending request dropped", dropped)
+			if dropped.ApprovalsDropped != 1 || dropped.PendingDropped != 1 || dropped.WormholesDropped != 1 {
+				t.Errorf("got %+v, want one approval, pending request, and addressed wormhole dropped", dropped)
 			}
+			if !allZeroForServerTest(addressed) {
+				t.Error("drop did not zero the caller's addressed wormhole")
+			}
+			item, err := s.Wormhole.Consume("node-2", "node-1", "sent")
+			if err != nil {
+				t.Fatalf("drop removed an item the caller sent: %v", err)
+			}
+			zeroBytes(item.Value)
 
 			if got := s.Store.ApprovalsFor("node-1", testTime); len(got) != 0 {
 				t.Errorf("got %+v, want the caller's approvals gone", got)
 			}
+
 			if got := s.Store.ApprovalsFor("node-2", testTime); len(got) != 1 {
 				t.Errorf("got %+v, want node-2's approval untouched", got)
 			}
@@ -395,6 +448,15 @@ func TestDropRemovesTheCallersRecordsAndNobodyElses(t *testing.T) {
 			}
 		})
 	}
+}
+
+func allZeroForServerTest(b []byte) bool {
+	for _, value := range b {
+		if value != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func TestDropIsIdempotent(t *testing.T) {

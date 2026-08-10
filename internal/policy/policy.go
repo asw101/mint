@@ -48,6 +48,41 @@ type Scope struct {
 type Grant struct {
 	Repos       []string          `json:"repos,omitempty"`
 	Permissions map[string]string `json:"permissions,omitempty"`
+	Wormhole    *WormholeGrant    `json:"wormhole,omitempty"`
+}
+
+// WormholeGrant bounds mailbox delivery separately from repository scopes.
+type WormholeGrant struct {
+	PutToTags []string `json:"putToTags,omitempty"`
+	Get       bool     `json:"get,omitempty"`
+}
+
+// AllowsWormholeGet reports whether any capability grant permits consumption.
+func AllowsWormholeGet(grants []Grant) bool {
+	for _, grant := range grants {
+		if grant.Wormhole != nil && grant.Wormhole.Get {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsWormholePut reports whether any capability grant permits delivery to
+// at least one of the recipient's current tags.
+func AllowsWormholePut(grants []Grant, recipientTags []string) bool {
+	for _, grant := range grants {
+		if grant.Wormhole == nil {
+			continue
+		}
+		for _, allowed := range grant.Wormhole.PutToTags {
+			for _, actual := range recipientTags {
+				if allowed == actual {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // IsZero reports whether the scope asks for nothing.

@@ -309,20 +309,20 @@ func TestDescribeDrop(t *testing.T) {
 				NodeID: "node-1", NodeName: "agent.example.ts.net",
 				ApprovalsDropped: 1, PendingDropped: 1,
 			},
-			want: "agent.example.ts.net dropped 1 approval and 1 pending request",
+			want: "agent.example.ts.net dropped 1 approval, 1 pending request, and 0 wormhole items",
 		},
 		{
 			name: "several",
 			resp: server.DropResponse{
 				NodeID: "node-1", NodeName: "agent.example.ts.net",
-				ApprovalsDropped: 2, PendingDropped: 0,
+				ApprovalsDropped: 2, PendingDropped: 0, WormholesDropped: 3,
 			},
-			want: "agent.example.ts.net dropped 2 approvals and 0 pending requests",
+			want: "agent.example.ts.net dropped 2 approvals, 0 pending requests, and 3 wormhole items",
 		},
 		{
 			name: "no name to fall back on",
 			resp: server.DropResponse{NodeID: "node-1", ApprovalsDropped: 1},
-			want: "node-1 dropped 1 approval and 0 pending requests",
+			want: "node-1 dropped 1 approval, 0 pending requests, and 0 wormhole items",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

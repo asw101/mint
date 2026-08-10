@@ -29,6 +29,7 @@ import (
 	"github.com/asw101/tsapp/internal/app"
 	"github.com/asw101/tsapp/internal/policy"
 	"github.com/asw101/tsapp/internal/server"
+	"github.com/asw101/tsapp/internal/wormhole"
 )
 
 const usage = `tsapp mints GitHub App tokens for tailnet clients.
@@ -38,6 +39,9 @@ Usage:
   tsapp token [flags]              ask the daemon for a token
   tsapp whoami [flags]             show what the daemon sees you as
   tsapp drop [flags]               give up everything this node holds
+  tsapp wormhole put --to NODE --key KEY [--ttl 10m] [--replace]
+  tsapp wormhole get --from NODE --key KEY
+  tsapp wormhole discard --from NODE --key KEY
 
   tsapp version                    print the version and how it was built
 
@@ -77,13 +81,14 @@ token flags:
   --state-dir PATH    tsnet state for this client   (default OS config dir/tsapp-client)
   --json              print the full response
 
-whoami takes the client flags that do not describe a scope — --server,
---hostname, and --state-dir — and drop takes those plus --json.
+whoami and wormhole take the client flags that do not describe a scope —
+--server, --hostname, and --state-dir — and drop takes those plus --json.
 
 Drop needs no approval, because it only ever reduces what the caller can
 reach: the daemon removes the calling node's approvals and its outstanding
-requests immediately. The node it drops is always the caller, so one client
-cannot drop another's access.
+requests and every wormhole item addressed to it immediately. Items it sent to
+other nodes remain. The node it drops is always the caller, so one client cannot
+drop another's access.
 
 Clients join the tailnet on first run and print a login URL. Approve the node
 in the Tailscale console, give it a tag, and grant it the tsapp capability;
@@ -97,9 +102,10 @@ Reset permanently deletes local tsnet identities and, for the daemon, every
 approval. It does not remove the corresponding nodes from the Tailscale admin
 console.
 
-Exit codes from 'tsapp token', so a script need not read the message:
+Exit codes from 'tsapp token' and 'tsapp wormhole', so a script need not read
+the message:
   0  a token, on stdout
-  2  pending approval — retry once a human has approved it
+  2  pending approval — unused by wormhole v1
   3  denied by policy — retrying will not help
   1  anything else
 `
@@ -149,6 +155,8 @@ func run(args []string) error {
 		return cmdWhoami(args[1:])
 	case "drop":
 		return cmdDrop(args[1:])
+	case "wormhole":
+		return cmdWormhole(args[1:])
 	case "pending":
 		return cmdAdminList(args[1:], "/v1/pending")
 	case "approvals":
@@ -251,11 +259,15 @@ func cmdServe(args []string) error {
 	if strings.TrimSpace(*appID) == "" || strings.TrimSpace(*keyPath) == "" {
 		return errors.New("serve needs --app-id and --key (or GH_APP_ID and GH_APP_KEY_FILE)")
 	}
+	if err := disableCoreDumps(); err != nil {
+		return err
+	}
 
 	signer, err := app.LoadPEMSigner(*keyPath)
 	if err != nil {
 		return err
 	}
+
 	gh := &app.Client{AppID: *appID, Signer: signer, BaseURL: *apiURL, UserAgent: "tsapp"}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -297,12 +309,16 @@ func cmdServe(args []string) error {
 	}
 
 	handler := &server.Server{
-		Engine: &policy.Engine{Store: store, Account: account},
-		Store:  store,
-		Who:    localClient,
-		Minter: &githubMinter{client: gh, installationID: installationID},
-		Logger: log.Default(),
+		Engine:   &policy.Engine{Store: store, Account: account},
+		Store:    store,
+		Who:      localClient,
+		Minter:   &githubMinter{client: gh, installationID: installationID},
+		Logger:   log.Default(),
+		Wormhole: wormhole.New(),
+		Peers:    localPeerResolver{client: localClient},
 	}
+	handler.StartWormhole(ctx.Done())
+	defer handler.CloseWormhole()
 
 	var tailnetListener net.Listener
 	addr := fmt.Sprintf(":%d", *port)
@@ -353,6 +369,19 @@ func cmdServe(args []string) error {
 	case err := <-errs:
 		return err
 	}
+}
+
+func disableCoreDumps() error {
+	limit := &syscall.Rlimit{}
+	if err := syscall.Getrlimit(syscall.RLIMIT_CORE, limit); err != nil {
+		return fmt.Errorf("read core dump limit: %w", err)
+	}
+	limit.Cur = 0
+	limit.Max = 0
+	if err := syscall.Setrlimit(syscall.RLIMIT_CORE, limit); err != nil {
+		return fmt.Errorf("disable core dumps: %w", err)
+	}
+	return nil
 }
 
 // listenUnix binds the admin socket, replacing a stale one left by a crash.
@@ -700,11 +729,13 @@ func describeDrop(d server.DropResponse) string {
 	if who == "" {
 		who = d.NodeID
 	}
-	if d.ApprovalsDropped == 0 && d.PendingDropped == 0 {
+	if d.ApprovalsDropped == 0 && d.PendingDropped == 0 && d.WormholesDropped == 0 {
 		return who + " held nothing to drop"
 	}
-	return fmt.Sprintf("%s dropped %s and %s", who,
-		count(d.ApprovalsDropped, "approval"), count(d.PendingDropped, "pending request"))
+	return fmt.Sprintf("%s dropped %s, %s, and %s", who,
+		count(d.ApprovalsDropped, "approval"),
+		count(d.PendingDropped, "pending request"),
+		count(d.WormholesDropped, "wormhole item"))
 }
 
 func count(n int, noun string) string {

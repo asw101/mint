@@ -142,6 +142,29 @@ func TestCoveredByAnyDoesNotCombineGrants(t *testing.T) {
 	}
 }
 
+func TestWormholeCapabilityIsIndependentOfTokenScope(t *testing.T) {
+	grants := []Grant{
+		{Repos: []string{"repo"}},
+		{Wormhole: &WormholeGrant{PutToTags: []string{"tag:agent"}}},
+		{Wormhole: &WormholeGrant{Get: true}},
+	}
+	if !AllowsWormholePut(grants, []string{"tag:other", "tag:agent"}) {
+		t.Error("putToTags did not cover a matching recipient tag")
+	}
+	if AllowsWormholePut(grants, []string{"tag:other"}) {
+		t.Error("putToTags covered a tag it did not name")
+	}
+	if !AllowsWormholeGet(grants) {
+		t.Error("get capability was not recognized")
+	}
+	if AllowsWormholePut([]Grant{{Repos: []string{"repo"}}}, []string{"tag:agent"}) {
+		t.Error("a token grant must not imply wormhole put")
+	}
+	if AllowsWormholeGet([]Grant{{Repos: []string{"repo"}}}) {
+		t.Error("a token grant must not imply wormhole get")
+	}
+}
+
 func TestScopeNormalize(t *testing.T) {
 	got := Scope{Repos: []string{"two", "one", "two", "  ", " three "}}.Normalize()
 	want := []string{"one", "three", "two"}

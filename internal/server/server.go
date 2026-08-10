@@ -20,6 +20,7 @@ import (
 
 	"github.com/asw101/tsapp/internal/app"
 	"github.com/asw101/tsapp/internal/policy"
+	"github.com/asw101/tsapp/internal/wormhole"
 )
 
 // CapName is the tailnet ACL capability this service reads, typed for the
@@ -64,6 +65,7 @@ type DropResponse struct {
 	NodeName         string `json:"node_name,omitempty"`
 	ApprovalsDropped int    `json:"approvals_dropped"`
 	PendingDropped   int    `json:"pending_dropped"`
+	WormholesDropped int    `json:"wormholes_dropped"`
 }
 
 // Server serves both surfaces.
@@ -73,6 +75,9 @@ type Server struct {
 	Who    Identifier
 	Minter Minter
 	Logger *log.Logger
+
+	Wormhole *wormhole.Store
+	Peers    PeerResolver
 }
 
 func (s *Server) logf(format string, args ...any) {
@@ -86,6 +91,9 @@ func (s *Server) TailnetHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/token", s.handleToken)
 	mux.HandleFunc("POST /v1/drop", s.handleDrop)
+	mux.HandleFunc("POST /v1/wormhole/put", s.handleWormholePut)
+	mux.HandleFunc("POST /v1/wormhole/get", s.handleWormholeGet)
+	mux.HandleFunc("POST /v1/wormhole/discard", s.handleWormholeDiscard)
 	mux.HandleFunc("GET /v1/whoami", s.handleWhoami)
 	return mux
 }
@@ -192,15 +200,20 @@ func (s *Server) handleDrop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, StatusResponse{Status: "error", Reason: "could not drop the node's records"})
 		return
 	}
+	wormholes := 0
+	if s.Wormhole != nil {
+		wormholes = s.Wormhole.DropRecipient(identity.NodeID)
+	}
 	// A node giving up its own access is as much a change in who may mint as
 	// an approval is, so it belongs in the same audit trail.
-	s.logf("drop: %s (%s) approvals=%d pending=%d",
-		identity.NodeName, identity.NodeID, approvals, pending)
+	s.logf("drop: %s (%s) approvals=%d pending=%d wormholes=%d",
+		identity.NodeName, identity.NodeID, approvals, pending, wormholes)
 	writeJSON(w, http.StatusOK, DropResponse{
 		NodeID:           identity.NodeID,
 		NodeName:         identity.NodeName,
 		ApprovalsDropped: approvals,
 		PendingDropped:   pending,
+		WormholesDropped: wormholes,
 	})
 }
 

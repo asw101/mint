@@ -1,6 +1,6 @@
 ---
 name: tsapp
-description: Get a short-lived, repository-scoped GitHub token from the tsapp broker on the tailnet, instead of using a stored PAT or the ambient gh login. Use when the user says /tsapp, when a task needs GitHub access to a specific repository, when gh or git fails with a permissions or authentication error, or when you are about to ask the user for a token.
+description: Get a short-lived GitHub token or move an ephemeral consume-once secret through the tsapp broker on the tailnet. Use when the user says /tsapp, a task needs scoped GitHub access, or a bootstrap credential must move between named tailnet nodes without chat, clipboard, or a file.
 user-invocable: true
 allowed-tools: Bash
 ---
@@ -126,6 +126,64 @@ do not ask the user to approve something they have already approved.
   not widening — that is just being honest about the task.
 - **Do not fall back to another credential** when `tsapp` refuses. A refusal is
   the answer, not an obstacle.
+
+## Move an ephemeral secret
+
+Pipe the producer directly into a short-lived, explicitly addressed item:
+
+```sh
+producer |
+  tsapp wormhole put --to <recipient-node> --key <purpose/key> --ttl 10m
+```
+
+Consume it directly into a stdin-aware program:
+
+```sh
+tsapp wormhole get --from <sender-node> --key <purpose/key> |
+  consumer
+```
+
+`--to`, `--from`, and `--key` are mandatory. Sender identity is part of the
+mailbox address and prevents another authorized sender from substituting a
+value under the same key. Always use a short explicit TTL.
+
+Use explicit replacement only when the source credential was regenerated:
+
+```sh
+producer |
+  tsapp wormhole put --to <recipient-node> --key <purpose/key> --ttl 10m --replace
+```
+
+A replacement warning means the previous secret was never consumed. Surface
+that fact to the user: the recipient may be unavailable or the handoff stalled.
+Never add `--replace` merely to make a `409` retry succeed.
+
+When the task is cancelled, discard without revealing:
+
+```sh
+tsapp wormhole discard --from <sender-node> --key <purpose/key>
+```
+
+### Wormhole rules
+
+- Pipe producer stdout directly into `wormhole put`; never inspect, summarize,
+  print, log, or include the value in a reply.
+- Pipe `wormhole get` directly into the consumer where possible.
+- Never use a value flag, command argument, `set -x`, ordinary temporary file,
+  chat, issue comment, clipboard, or committed file for the secret.
+- Never omit `--from`. The expected sender is a security boundary.
+- **Never retry an ambiguous `get`.** Exit `1` may mean the daemon consumed the
+  item and the response was lost. Request a newly created credential.
+- On exit `1` after an ambiguous `put`, ask the recipient to attempt the
+  expected get once. If it is absent, reissue the source credential under a new
+  key; do not loop the put.
+- On absent, expired, or consumed output, request a newly created credential.
+  A mailbox item cannot be restored.
+- On exit `3`, stop. Policy denial is not an obstacle to bypass, and another
+  transport or credential is not an acceptable fallback.
+- Use `discard` when the handoff is cancelled.
+- Prefer a stdin-aware consumer. If a file is unavoidable, use a restrictive
+  memory-backed filesystem and remove the file immediately.
 
 ## Diagnosing
 

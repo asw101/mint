@@ -140,7 +140,22 @@ token *args: build
 whoami *args: build
     @"{{ binary }}" whoami "$@"
 
-# Give up every approval and pending request this client holds.
+# Give up every approval, pending request, and addressed wormhole this client holds.
 [group('client')]
 drop *args: build
     @"{{ binary }}" drop "$@"
+
+# Put stdin into a consume-once mailbox item.
+[group('client')]
+wormhole-put *args: build
+    @"{{ binary }}" wormhole put "$@"
+
+# Consume a mailbox item to stdout.
+[group('client')]
+wormhole-get *args: build
+    @"{{ binary }}" wormhole get "$@"
+
+# Discard a mailbox item without revealing it.
+[group('client')]
+wormhole-discard *args: build
+    @"{{ binary }}" wormhole discard "$@"
