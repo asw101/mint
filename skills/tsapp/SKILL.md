@@ -62,6 +62,19 @@ per node **and scope**, and read does not cover write, so the first push turns
 into a second approval round-trip for a human who already said yes once. Ask
 at the level the work actually needs, once.
 
+Enumerating permissions yourself is also easy to get wrong. `contents=write`
+alone cannot push a commit that touches `.github/workflows/**`, however
+ordinary that commit is:
+
+```
+! [remote rejected] main -> main (refusing to allow a GitHub App to create or
+  update workflow `.github/workflows/ci.yaml` without `workflows` permission)
+```
+
+Syncing a fork almost always carries CI changes with it, so that push needs
+`workflows` as well as `contents`. Inheriting the installation's permissions
+avoids having to predict which of them a commit will turn out to need.
+
 ## Read the exit code, not the message
 
 | Exit | Meaning | Do this |
