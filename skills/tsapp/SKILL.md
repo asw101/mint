@@ -21,9 +21,7 @@ tsapp token --repo <name>
 ```
 
 `--repo` takes a bare name or `owner/name`, is repeatable, and accepts a
-comma-separated list. Ask for the **narrowest** set that does the job — a
-narrower request is served silently from an existing approval, while a wider
-one interrupts a human.
+comma-separated list.
 
 Use it without letting it reach a log or the transcript:
 
@@ -38,6 +36,31 @@ GH_TOKEN=$(tsapp token --repo widget) \
   git -c credential.helper='!f() { echo "username=x-access-token"; echo "password=$GH_TOKEN"; }; f' \
   clone https://github.com/asw101/widget
 ```
+
+## Scope: narrow on repositories, not on permissions
+
+These are two different axes, and they take opposite defaults.
+
+**Repositories — ask for the narrowest set that does the job.** A narrower
+request is served silently from an existing approval, while a wider one
+interrupts a human.
+
+**Permissions — do not narrow by default.** Omit `--permission` and the token
+inherits the GitHub App installation's permission set (see the capability
+table in the README). Assume that a repository you have access to is one you
+may need to *work* in — push a branch, open a pull request, sync a fork — not
+merely read.
+
+Pass `--permission` when you deliberately want a weaker token:
+
+```sh
+tsapp token --repo widget --permission contents=read    # deliberately read-only
+```
+
+Defaulting to `contents=read` "to be safe" is a false economy. Approvals are
+per node **and scope**, and read does not cover write, so the first push turns
+into a second approval round-trip for a human who already said yes once. Ask
+at the level the work actually needs, once.
 
 ## Read the exit code, not the message
 
@@ -71,6 +94,12 @@ Then wait for them. **Approval is a human decision, and `tsapp approve` only
 works on the daemon's host** — if you are not on it, you cannot approve, and
 you should not try.
 
+**Approvals persist.** Once a scope is approved for your node, re-requesting
+that scope — or any narrower one — mints a token immediately, with no human
+involved. Only a *wider* request queues again. So routine work on
+already-approved repositories is self-service: mint a fresh token per use and
+do not ask the user to approve something they have already approved.
+
 ## Rules
 
 - **Never print a token**, echo it, write it to a file, or put it in a commit,
@@ -78,9 +107,10 @@ you should not try.
 - **Mint per use.** Tokens last an hour. Do not cache one, and do not carry one
   between tasks.
 - **Do not retry an exit `3`.** It is a policy decision. Report it and stop.
-- **Do not widen the request to make an error go away.** Asking for more
-  repositories than the task needs is how a narrow approval becomes a broad
-  one.
+- **Do not widen the *repository* set to make an error go away.** Asking for
+  more repositories than the task needs is how a narrow approval becomes a
+  broad one. Asking up front for the permission the work genuinely needs is
+  not widening — that is just being honest about the task.
 - **Do not fall back to another credential** when `tsapp` refuses. A refusal is
   the answer, not an obstacle.
 
