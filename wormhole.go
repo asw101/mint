@@ -89,6 +89,10 @@ func cmdWormholePut(args []string) error {
 	}
 	defer srv.Close()
 
+	if err := settleTailnet(ctx, httpClient, cf.server); err != nil {
+		return err
+	}
+
 	resp, err := doWormholeRequest(ctx, httpClient, cf.server, "/v1/wormhole/put", body)
 	if err != nil {
 		return fmt.Errorf("put outcome is ambiguous: the daemon may have stored the item; ask the recipient to get it once before reissuing under a new key: %w", err)
@@ -142,8 +146,14 @@ func cmdWormholeGet(args []string) error {
 	}
 	defer srv.Close()
 
+	if err := settleTailnet(ctx, httpClient, cf.server); err != nil {
+		return err
+	}
+
 	// Consume is at-most-once. A retry after a lost response could turn a
-	// successful consume into a misleading absent result.
+	// successful consume into a misleading absent result, which is why the
+	// wait for the tailnet happens above, before anything is sent, rather than
+	// as a retry around this request.
 	resp, err := doWormholeRequest(ctx, httpClient, cf.server, "/v1/wormhole/get", body)
 	if err != nil {
 		return fmt.Errorf("get outcome is ambiguous: the item may already have been consumed; do not retry automatically: %w", err)
@@ -189,6 +199,10 @@ func cmdWormholeDiscard(args []string) error {
 	}
 	defer srv.Close()
 
+	if err := settleTailnet(ctx, httpClient, cf.server); err != nil {
+		return err
+	}
+
 	resp, err := doWormholeRequest(ctx, httpClient, cf.server, "/v1/wormhole/discard", body)
 	if err != nil {
 		return fmt.Errorf("discard outcome is ambiguous: the item may already have been discarded: %w", err)
@@ -213,6 +227,36 @@ func readWormholeValue(r io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("value exceeds %d bytes", wormhole.MaxValueBytes)
 	}
 	return value, nil
+}
+
+// settleTailnet waits for the tailnet to become usable, before any wormhole
+// request is issued.
+//
+// Every invocation brings up its own tsnet stack, and MagicDNS does not resolve
+// for the first moment after that. token, whoami, and drop absorb this by
+// retrying the request itself; wormhole must not. A get is at-most-once, so
+// repeating one that may already have been delivered could turn a successful
+// consume into a misleading absent result, and a repeated put could collide
+// with the item it just stored.
+//
+// Readiness is therefore a precondition rather than a retry around the real
+// request. whoami is idempotent and carries no mailbox effect, so retrying it
+// costs nothing; once it answers, the wormhole request goes out exactly once.
+//
+// A failure here is unambiguous — nothing was sent — so callers report it
+// plainly instead of warning that the outcome is unknown.
+func settleTailnet(ctx context.Context, client *http.Client, baseURL string) error {
+	resp, err := doWhileSettling(ctx, client, func() (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodGet,
+			strings.TrimSuffix(baseURL, "/")+"/v1/whoami", nil)
+	})
+	if err != nil {
+		return fmt.Errorf("reach %s: %w", baseURL, err)
+	}
+	// Only that an answer arrived matters, not what it said.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	resp.Body.Close()
+	return nil
 }
 
 func doWormholeRequest(ctx context.Context, client *http.Client, baseURL, path string, body []byte) (*http.Response, error) {

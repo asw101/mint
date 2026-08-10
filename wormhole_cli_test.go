@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -130,5 +132,63 @@ func TestPeerResolverRefusesAmbiguousShortNames(t *testing.T) {
 func TestWormholeDefaultAndMaximumTTL(t *testing.T) {
 	if wormhole.DefaultTTL != 10*time.Minute || wormhole.MaxTTL != time.Hour {
 		t.Errorf("got default/max %s/%s", wormhole.DefaultTTL, wormhole.MaxTTL)
+	}
+}
+
+// settleProbeTransport fails the first n round trips with a transport error, the way
+// MagicDNS does before the tsnet stack has settled, then delegates.
+type settleProbeTransport struct {
+	failures int
+	attempts int
+	paths    []string
+	next     http.RoundTripper
+}
+
+func (f *settleProbeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.attempts++
+	f.paths = append(f.paths, r.URL.Path)
+	if f.attempts <= f.failures {
+		return nil, fmt.Errorf("lookup %s: no such host", r.URL.Hostname())
+	}
+	return f.next.RoundTrip(r)
+}
+
+// A cold tsnet stack must not fail a wormhole command outright: the wait
+// belongs before the request. Regression test for wormhole commands issuing a
+// bare request while token/whoami/drop retried through doWhileSettling.
+func TestSettleTailnetAbsorbsColdStartThenTheRequestGoesOutOnce(t *testing.T) {
+	var wormholeCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/wormhole/get" {
+			wormholeCalls++
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	ft := &settleProbeTransport{failures: 2, next: http.DefaultTransport}
+	client := &http.Client{Transport: ft}
+
+	if err := settleTailnet(context.Background(), client, srv.URL); err != nil {
+		t.Fatalf("settleTailnet did not absorb the cold start: %v", err)
+	}
+	if ft.attempts != 3 {
+		t.Errorf("got %d attempts, want 3 (two failures then success)", ft.attempts)
+	}
+	for _, p := range ft.paths {
+		if p != "/v1/whoami" {
+			t.Errorf("settle probed %s; it must only probe the idempotent whoami", p)
+		}
+	}
+
+	// The at-most-once request is issued exactly once, never retried.
+	resp, err := doWormholeRequest(context.Background(), client, srv.URL, "/v1/wormhole/get", []byte(`{}`))
+	if err != nil {
+		t.Fatalf("wormhole request after settle: %v", err)
+	}
+	resp.Body.Close()
+	if wormholeCalls != 1 {
+		t.Errorf("wormhole endpoint hit %d times, want exactly 1", wormholeCalls)
 	}
 }
