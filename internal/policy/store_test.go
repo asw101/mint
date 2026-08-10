@@ -176,6 +176,127 @@ func TestPruneExpired(t *testing.T) {
 	}
 }
 
+// seedNode gives a node one approval and one outstanding request, so a drop
+// has both kinds of record to remove.
+func seedNode(t *testing.T, s *Store, nodeID string) {
+	t.Helper()
+	approved, err := s.AddPending(Request{
+		ID:          nodeID + "-approved",
+		NodeID:      nodeID,
+		NodeName:    "agent-" + nodeID,
+		Scope:       Scope{Repos: []string{"one"}},
+		RequestedAt: testTime,
+	})
+	if err != nil {
+		t.Fatalf("AddPending: %v", err)
+	}
+	if _, err := s.Approve(approved.ID, 0, testTime, func() (string, error) { return nodeID + "-approval", nil }); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if _, err := s.AddPending(Request{
+		ID:          nodeID + "-pending",
+		NodeID:      nodeID,
+		NodeName:    "agent-" + nodeID,
+		Scope:       Scope{Repos: []string{"two"}},
+		RequestedAt: testTime,
+	}); err != nil {
+		t.Fatalf("AddPending: %v", err)
+	}
+}
+
+func TestDropNodeRemovesOnlyThatNode(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		drop              string
+		approvals         int
+		pending           int
+		wantApprovalsLeft []string
+		wantPendingLeft   []string
+	}{
+		{
+			name:              "a node holding both kinds of record",
+			drop:              "node-1",
+			approvals:         1,
+			pending:           1,
+			wantApprovalsLeft: []string{"node-2-approval"},
+			wantPendingLeft:   []string{"node-2-pending"},
+		},
+		{
+			name:              "a node holding nothing",
+			drop:              "node-3",
+			approvals:         0,
+			pending:           0,
+			wantApprovalsLeft: []string{"node-1-approval", "node-2-approval"},
+			wantPendingLeft:   []string{"node-1-pending", "node-2-pending"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, path := newTestStore(t)
+			seedNode(t, s, "node-1")
+			seedNode(t, s, "node-2")
+
+			approvals, pending, err := s.DropNode(tc.drop)
+			if err != nil {
+				t.Fatalf("DropNode: %v", err)
+			}
+			if approvals != tc.approvals || pending != tc.pending {
+				t.Errorf("got %d approvals and %d pending dropped, want %d and %d",
+					approvals, pending, tc.approvals, tc.pending)
+			}
+
+			// Reopening proves the removal reached disk, not just memory.
+			reopened, err := Open(path)
+			if err != nil {
+				t.Fatalf("reopen: %v", err)
+			}
+			var gotApprovals []string
+			for _, a := range reopened.Approvals() {
+				gotApprovals = append(gotApprovals, a.ID)
+			}
+			var gotPending []string
+			for _, r := range reopened.Pending() {
+				gotPending = append(gotPending, r.ID)
+			}
+			if !equalIDs(gotApprovals, tc.wantApprovalsLeft) {
+				t.Errorf("got approvals %v, want %v", gotApprovals, tc.wantApprovalsLeft)
+			}
+			if !equalIDs(gotPending, tc.wantPendingLeft) {
+				t.Errorf("got pending %v, want %v", gotPending, tc.wantPendingLeft)
+			}
+		})
+	}
+}
+
+func TestDropNodeIsIdempotent(t *testing.T) {
+	s, _ := newTestStore(t)
+	seedNode(t, s, "node-1")
+
+	if _, _, err := s.DropNode("node-1"); err != nil {
+		t.Fatalf("DropNode: %v", err)
+	}
+	// Dropping again is not an error: a node that holds nothing has already
+	// achieved what it asked for.
+	approvals, pending, err := s.DropNode("node-1")
+	if err != nil {
+		t.Fatalf("second DropNode: %v", err)
+	}
+	if approvals != 0 || pending != 0 {
+		t.Errorf("got %d approvals and %d pending on the second drop, want none", approvals, pending)
+	}
+}
+
+func equalIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestOpenMissingFileStartsEmpty(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "absent.json"))
 	if err != nil {

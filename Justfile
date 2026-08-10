@@ -139,3 +139,8 @@ token *args: build
 [group('client')]
 whoami *args: build
     @"{{ binary }}" whoami "$@"
+
+# Give up every approval and pending request this client holds.
+[group('client')]
+drop *args: build
+    @"{{ binary }}" drop "$@"

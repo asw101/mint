@@ -191,6 +191,46 @@ func (s *Store) Revoke(approvalID string) error {
 	return fmt.Errorf("approval %q: %w", approvalID, ErrNotFound)
 }
 
+// DropNode removes everything a node holds — its approvals and its
+// outstanding requests — and returns how many of each went away.
+//
+// Pending requests go too. They are latent privilege: leaving them behind
+// would let a request the node made before giving up its access be approved
+// afterwards, which is precisely what dropping is meant to prevent.
+//
+// A node that holds nothing is not an error. Surrendering privilege you do
+// not have has already achieved what it asked for.
+func (s *Store) DropNode(nodeID string) (approvals int, pending int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	keptApprovals := s.state.Approvals[:0]
+	for _, a := range s.state.Approvals {
+		if a.NodeID == nodeID {
+			approvals++
+			continue
+		}
+		keptApprovals = append(keptApprovals, a)
+	}
+	keptPending := s.state.Pending[:0]
+	for _, r := range s.state.Pending {
+		if r.NodeID == nodeID {
+			pending++
+			continue
+		}
+		keptPending = append(keptPending, r)
+	}
+	if approvals == 0 && pending == 0 {
+		return 0, 0, nil
+	}
+	s.state.Approvals = keptApprovals
+	s.state.Pending = keptPending
+	if err := s.save(); err != nil {
+		return 0, 0, err
+	}
+	return approvals, pending, nil
+}
+
 // PruneExpired drops lapsed approvals and returns how many were removed.
 func (s *Store) PruneExpired(now time.Time) (int, error) {
 	s.mu.Lock()

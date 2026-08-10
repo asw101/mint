@@ -37,6 +37,7 @@ Usage:
   tsapp serve [flags]              run the daemon
   tsapp token [flags]              ask the daemon for a token
   tsapp whoami [flags]             show what the daemon sees you as
+  tsapp drop [flags]               give up everything this node holds
 
   tsapp version                    print the version and how it was built
 
@@ -75,6 +76,14 @@ token flags:
   --hostname NAME     tailnet name for this client  (default tsapp-client)
   --state-dir PATH    tsnet state for this client   (default OS config dir/tsapp-client)
   --json              print the full response
+
+whoami takes the client flags that do not describe a scope — --server,
+--hostname, and --state-dir — and drop takes those plus --json.
+
+Drop needs no approval, because it only ever reduces what the caller can
+reach: the daemon removes the calling node's approvals and its outstanding
+requests immediately. The node it drops is always the caller, so one client
+cannot drop another's access.
 
 Clients join the tailnet on first run and print a login URL. Approve the node
 in the Tailscale console, give it a tag, and grant it the tsapp capability;
@@ -138,6 +147,8 @@ func run(args []string) error {
 		return cmdToken(args[1:])
 	case "whoami":
 		return cmdWhoami(args[1:])
+	case "drop":
+		return cmdDrop(args[1:])
 	case "pending":
 		return cmdAdminList(args[1:], "/v1/pending")
 	case "approvals":
@@ -632,6 +643,75 @@ func cmdWhoami(args []string) error {
 	}
 	defer resp.Body.Close()
 	return copyJSON(resp)
+}
+
+// cmdDrop asks the daemon to remove everything this node holds.
+//
+// It names no node: the daemon drops whoever the tailnet says is calling, so
+// the only access this can remove is the caller's own.
+func cmdDrop(args []string) error {
+	fs := flag.NewFlagSet("drop", flag.ContinueOnError)
+	var cf clientFlags
+	cf.bind(fs)
+	asJSON := fs.Bool("json", false, "print the full response")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	srv, httpClient, err := cf.dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer srv.Close()
+
+	resp, err := doWhileSettling(ctx, httpClient, func() (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodPost,
+			strings.TrimSuffix(cf.server, "/")+"/v1/drop", nil)
+	})
+	if err != nil {
+		return fmt.Errorf("reach %s: %w", cf.server, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var status server.StatusResponse
+		_ = json.NewDecoder(resp.Body).Decode(&status)
+		return errors.New(reasonOr(status, "server returned "+resp.Status))
+	}
+	var dropped server.DropResponse
+	if err := json.NewDecoder(resp.Body).Decode(&dropped); err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(dropped)
+	}
+	fmt.Println(describeDrop(dropped))
+	return nil
+}
+
+// describeDrop reports what went away, including when nothing did: a node
+// that already held nothing got what it asked for, so that is a sentence
+// rather than an error.
+func describeDrop(d server.DropResponse) string {
+	who := d.NodeName
+	if who == "" {
+		who = d.NodeID
+	}
+	if d.ApprovalsDropped == 0 && d.PendingDropped == 0 {
+		return who + " held nothing to drop"
+	}
+	return fmt.Sprintf("%s dropped %s and %s", who,
+		count(d.ApprovalsDropped, "approval"), count(d.PendingDropped, "pending request"))
+}
+
+func count(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // settleTimeout bounds how long a client waits for the tailnet to become

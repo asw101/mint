@@ -313,6 +313,123 @@ func TestAdminSurfaceIsNotOnTheTailnetHandler(t *testing.T) {
 
 const AllReposForTest = policy.AllRepos
 
+// seedNode gives a node one approval and one outstanding request, so a drop
+// has both kinds of record to remove.
+func seedNode(t *testing.T, s *Server, nodeID string) {
+	t.Helper()
+	approved, err := s.Store.AddPending(policy.Request{
+		ID:          nodeID + "-approved",
+		NodeID:      nodeID,
+		NodeName:    nodeID + ".example.ts.net",
+		Scope:       policy.Scope{Repos: []string{"one"}},
+		RequestedAt: testTime,
+	})
+	if err != nil {
+		t.Fatalf("AddPending: %v", err)
+	}
+	if _, err := s.Store.Approve(approved.ID, 0, testTime, func() (string, error) { return nodeID + "-approval", nil }); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if _, err := s.Store.AddPending(policy.Request{
+		ID:          nodeID + "-pending",
+		NodeID:      nodeID,
+		NodeName:    nodeID + ".example.ts.net",
+		Scope:       policy.Scope{Repos: []string{"two"}},
+		RequestedAt: testTime,
+	}); err != nil {
+		t.Fatalf("AddPending: %v", err)
+	}
+}
+
+func postDrop(t *testing.T, s *Server, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/drop", bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	s.TailnetHandler().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestDropRemovesTheCallersRecordsAndNobodyElses(t *testing.T) {
+	// Whatever the body says, the node dropped is the one the tailnet
+	// identified. A client that could name a node would be able to strip
+	// another node's access without holding any capability itself.
+	for _, tc := range []struct{ name, body string }{
+		{"no body", ""},
+		{"empty object", `{}`},
+		{"names another node", `{"node_id":"node-2"}`},
+		{"names another node's records", `{"node_id":"node-2","id":"node-2-approval"}`},
+		{"malformed body", `{not json`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(t, whoIs(t, "node-1", policy.Grant{Repos: []string{"one"}}), &fakeMinter{})
+			seedNode(t, s, "node-1")
+			seedNode(t, s, "node-2")
+
+			rec := postDrop(t, s, tc.body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body)
+			}
+			var dropped DropResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &dropped); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if dropped.NodeID != "node-1" {
+				t.Errorf("dropped node %q, want the calling node node-1", dropped.NodeID)
+			}
+			if dropped.ApprovalsDropped != 1 || dropped.PendingDropped != 1 {
+				t.Errorf("got %+v, want one approval and one pending request dropped", dropped)
+			}
+
+			if got := s.Store.ApprovalsFor("node-1", testTime); len(got) != 0 {
+				t.Errorf("got %+v, want the caller's approvals gone", got)
+			}
+			if got := s.Store.ApprovalsFor("node-2", testTime); len(got) != 1 {
+				t.Errorf("got %+v, want node-2's approval untouched", got)
+			}
+			var left []string
+			for _, r := range s.Store.Pending() {
+				left = append(left, r.ID)
+			}
+			if len(left) != 1 || left[0] != "node-2-pending" {
+				t.Errorf("got pending %v, want only node-2's request", left)
+			}
+		})
+	}
+}
+
+func TestDropIsIdempotent(t *testing.T) {
+	s := newTestServer(t, whoIs(t, "node-1", policy.Grant{Repos: []string{"one"}}), &fakeMinter{})
+	seedNode(t, s, "node-1")
+
+	postDrop(t, s, "")
+	// Having nothing to give up is success, not a failure: a client that
+	// dropped twice has what it asked for either way.
+	rec := postDrop(t, s, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 on a second drop: %s", rec.Code, rec.Body)
+	}
+	var dropped DropResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &dropped); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if dropped.ApprovalsDropped != 0 || dropped.PendingDropped != 0 {
+		t.Errorf("got %+v, want nothing dropped the second time", dropped)
+	}
+}
+
+func TestDropDeniedWhenCallerUnknown(t *testing.T) {
+	s := newTestServer(t, nil, &fakeMinter{})
+	seedNode(t, s, "node-1")
+	s.Who = fakeIdentifier{err: errors.New("no peer")}
+
+	rec := postDrop(t, s, `{"node_id":"node-1"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("got %d, want 403", rec.Code)
+	}
+	if len(s.Store.ApprovalsFor("node-1", testTime)) != 1 || len(s.Store.Pending()) != 1 {
+		t.Error("an unidentified caller must not remove anything")
+	}
+}
 func TestMintsTheResolvedScopeNotTheRawRequest(t *testing.T) {
 	minter := &fakeMinter{token: &app.Token{Token: "ghs_example"}}
 	s := newTestServer(t, whoIs(t, "node-1", policy.Grant{

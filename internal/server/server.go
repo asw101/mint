@@ -58,6 +58,14 @@ type StatusResponse struct {
 	RequestID string `json:"request_id,omitempty"`
 }
 
+// DropResponse reports what a node surrendered.
+type DropResponse struct {
+	NodeID           string `json:"node_id"`
+	NodeName         string `json:"node_name,omitempty"`
+	ApprovalsDropped int    `json:"approvals_dropped"`
+	PendingDropped   int    `json:"pending_dropped"`
+}
+
 // Server serves both surfaces.
 type Server struct {
 	Engine *policy.Engine
@@ -77,6 +85,7 @@ func (s *Server) logf(format string, args ...any) {
 func (s *Server) TailnetHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/token", s.handleToken)
+	mux.HandleFunc("POST /v1/drop", s.handleDrop)
 	mux.HandleFunc("GET /v1/whoami", s.handleWhoami)
 	return mux
 }
@@ -159,6 +168,40 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, identity)
+}
+
+// handleDrop surrenders everything the calling node holds. No human approves
+// it, because unlike every other mutation here it can only ever reduce what
+// the caller can reach.
+//
+// The node dropped is always the one the tailnet identified, never one named
+// in the request. Reading an id from the body, the query, or a header would
+// turn giving up your own access into taking away somebody else's — and the
+// caller would need no capability at all to do it.
+func (s *Server) handleDrop(w http.ResponseWriter, r *http.Request) {
+	identity, err := s.identify(r)
+	if err != nil {
+		s.logf("drop: unidentified caller %s: %v", r.RemoteAddr, err)
+		writeJSON(w, http.StatusForbidden, StatusResponse{Status: "denied", Reason: "caller could not be identified"})
+		return
+	}
+
+	approvals, pending, err := s.Store.DropNode(identity.NodeID)
+	if err != nil {
+		s.logf("drop: %s: %v", identity.NodeName, err)
+		writeJSON(w, http.StatusInternalServerError, StatusResponse{Status: "error", Reason: "could not drop the node's records"})
+		return
+	}
+	// A node giving up its own access is as much a change in who may mint as
+	// an approval is, so it belongs in the same audit trail.
+	s.logf("drop: %s (%s) approvals=%d pending=%d",
+		identity.NodeName, identity.NodeID, approvals, pending)
+	writeJSON(w, http.StatusOK, DropResponse{
+		NodeID:           identity.NodeID,
+		NodeName:         identity.NodeName,
+		ApprovalsDropped: approvals,
+		PendingDropped:   pending,
+	})
 }
 
 // identify turns a peer address into a policy identity, reading the ACL

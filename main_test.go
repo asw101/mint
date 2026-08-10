@@ -281,6 +281,58 @@ func TestServeRequiresAppCredentials(t *testing.T) {
 	}
 }
 
+func TestDropIsDocumentedAsAClientCommand(t *testing.T) {
+	if !strings.Contains(usage, "tsapp drop [flags]") {
+		t.Error("want drop in the usage text")
+	}
+	// Drop belongs beside the commands a tailnet client can run, not beside
+	// the admin ones that only reach the daemon over its socket.
+	if strings.Index(usage, "tsapp drop") > strings.Index(usage, "tsapp pending") {
+		t.Error("want drop listed with the client commands, above the admin group")
+	}
+}
+
+func TestDescribeDrop(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		resp server.DropResponse
+		want string
+	}{
+		{
+			name: "nothing to drop",
+			resp: server.DropResponse{NodeID: "node-1", NodeName: "agent.example.ts.net"},
+			want: "agent.example.ts.net held nothing to drop",
+		},
+		{
+			name: "one of each",
+			resp: server.DropResponse{
+				NodeID: "node-1", NodeName: "agent.example.ts.net",
+				ApprovalsDropped: 1, PendingDropped: 1,
+			},
+			want: "agent.example.ts.net dropped 1 approval and 1 pending request",
+		},
+		{
+			name: "several",
+			resp: server.DropResponse{
+				NodeID: "node-1", NodeName: "agent.example.ts.net",
+				ApprovalsDropped: 2, PendingDropped: 0,
+			},
+			want: "agent.example.ts.net dropped 2 approvals and 0 pending requests",
+		},
+		{
+			name: "no name to fall back on",
+			resp: server.DropResponse{NodeID: "node-1", ApprovalsDropped: 1},
+			want: "node-1 dropped 1 approval and 0 pending requests",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := describeDrop(tc.resp); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDefaultDirIsNamespaced(t *testing.T) {
 	if got := defaultDir("tsapp"); !strings.HasSuffix(got, "tsapp") {
 		t.Errorf("got %q, want it to end in the app name", got)
