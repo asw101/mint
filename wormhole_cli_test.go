@@ -23,12 +23,55 @@ import (
 func TestWormholeUsageListsTheExactCLI(t *testing.T) {
 	for _, line := range []string{
 		"tsapp wormhole put --to NODE --key KEY [--ttl 10m] [--replace]",
-		"tsapp wormhole get --from NODE --key KEY",
-		"tsapp wormhole discard --from NODE --key KEY",
+		"tsapp wormhole get --key KEY [--from NODE]",
+		"tsapp wormhole discard --key KEY [--from NODE]",
+		"tsapp wormhole list [--json]",
 	} {
 		if !strings.Contains(usage, line) || !strings.Contains(wormholeUsage, line) {
 			t.Errorf("usage is missing %q", line)
 		}
+	}
+}
+
+func TestWormholeListHumanOutput(t *testing.T) {
+	now := time.Date(2026, 8, 10, 20, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		result server.WormholeListResponse
+		want   []string
+	}{
+		{
+			name: "empty",
+			want: []string{"No wormhole items are addressed to this node."},
+		},
+		{
+			name: "table",
+			result: server.WormholeListResponse{Items: []server.WormholeListItem{{
+				SenderNodeID:   "node-1",
+				SenderNodeName: "sender.example.ts.net",
+				Key:            "azure/provisioner",
+				CreatedAt:      now,
+				ExpiresAt:      now.Add(10 * time.Minute),
+				SizeBytes:      123,
+			}}},
+			want: []string{
+				"SENDER", "SENDER ID", "KEY", "CREATED", "EXPIRES", "BYTES",
+				"sender.example.ts.net", "node-1", "azure/provisioner",
+				now.Format(time.RFC3339), "123",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := reportWormholeList(&out, tc.result); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output %q missing %q", out.String(), want)
+				}
+			}
+		})
 	}
 }
 
@@ -71,6 +114,25 @@ func TestWormholeHTTPStatusMapsPolicyDenialToExitThree(t *testing.T) {
 	var coded *exitCodeError
 	if !errors.As(err, &coded) || coded.code != exitDenied {
 		t.Fatalf("got %v, want exit %d", err, exitDenied)
+	}
+}
+
+func TestWormholeHTTPStatusLeavesSenderAmbiguityAtExitOne(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusConflict,
+		Status:     "409 Conflict",
+		Body: io.NopCloser(strings.NewReader(
+			`{"status":"ambiguous","reason":"candidate senders: sender-1, sender-2"}`)),
+	}
+	err := wormholeHTTPError(resp)
+	var coded *exitCodeError
+	if errors.As(err, &coded) {
+		t.Fatalf("got exit %d, want ordinary exit 1", coded.code)
+	}
+	for _, sender := range []string{"sender-1", "sender-2"} {
+		if !strings.Contains(err.Error(), sender) {
+			t.Errorf("error %q does not name %s", err, sender)
+		}
 	}
 }
 

@@ -40,8 +40,9 @@ Usage:
   tsapp whoami [flags]             show what the daemon sees you as
   tsapp drop [flags]               give up everything this node holds
   tsapp wormhole put --to NODE --key KEY [--ttl 10m] [--replace]
-  tsapp wormhole get --from NODE --key KEY
-  tsapp wormhole discard --from NODE --key KEY
+  tsapp wormhole get --key KEY [--from NODE]
+  tsapp wormhole discard --key KEY [--from NODE]
+  tsapp wormhole list [--json]
 
   tsapp version                    print the version and how it was built
 
@@ -82,7 +83,8 @@ token flags:
   --json              print the full response
 
 whoami and wormhole take the client flags that do not describe a scope —
---server, --hostname, and --state-dir — and drop takes those plus --json.
+--server, --hostname, and --state-dir — and drop and wormhole list take those
+plus --json.
 
 Drop needs no approval, because it only ever reduces what the caller can
 reach: the daemon removes the calling node's approvals and its outstanding

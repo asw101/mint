@@ -147,6 +147,129 @@ func TestWormholeConsumeIsAtMostOnceAndSenderIsPartOfAddress(t *testing.T) {
 	}
 }
 
+func TestWormholeKeyOnlyActionsRejectAmbiguityWithoutRemovingItems(t *testing.T) {
+	for _, action := range []string{"get", "discard"} {
+		t.Run(action, func(t *testing.T) {
+			s := newTestServer(t, whoIs(t, "sender", wormholeGrantPut("tag:agent")), &fakeMinter{})
+			resolver := s.Peers.(fakePeerResolver)
+			resolver.peers["sender-2"] = ResolvedPeer{NodeID: "sender-2", NodeName: "sender-2.example.ts.net", Tags: []string{"tag:admin"}}
+			s.Peers = resolver
+
+			putWormhole(t, s, "sender", "node-1", "same-key", []byte("from one"), false)
+			putWormhole(t, s, "sender-2", "node-1", "same-key", []byte("from two"), false)
+			setCaller(s, "node-1", wormholeGrantGet())
+
+			rec := postWormhole(t, s, "/v1/wormhole/"+action, WormholeGetRequest{Key: "same-key"})
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("key-only %s got %d, want 409: %s", action, rec.Code, rec.Body)
+			}
+			for _, sender := range []string{"sender.example.ts.net", "sender-2.example.ts.net"} {
+				if !strings.Contains(rec.Body.String(), sender) {
+					t.Errorf("ambiguity response %q does not name %s", rec.Body, sender)
+				}
+			}
+
+			for _, sender := range []string{"sender", "sender-2"} {
+				rec = postWormhole(t, s, "/v1/wormhole/get", WormholeGetRequest{From: sender, Key: "same-key"})
+				if rec.Code != http.StatusOK {
+					t.Fatalf("%s item was removed by ambiguous %s: %d: %s", sender, action, rec.Code, rec.Body)
+				}
+			}
+		})
+	}
+}
+
+func TestWormholeKeyOnlyGetAndDiscardResolveOneSender(t *testing.T) {
+	for _, action := range []string{"get", "discard"} {
+		t.Run(action, func(t *testing.T) {
+			s := newTestServer(t, whoIs(t, "sender", wormholeGrantPut("tag:agent")), &fakeMinter{})
+			putWormhole(t, s, "sender", "node-1", "key", []byte("secret"), false)
+			setCaller(s, "node-1", wormholeGrantGet())
+
+			rec := postWormhole(t, s, "/v1/wormhole/"+action, WormholeGetRequest{Key: "key"})
+			if rec.Code != http.StatusOK {
+				t.Fatalf("key-only %s got %d: %s", action, rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
+func TestWormholeListIsRecipientScopedAndNeverRevealsValues(t *testing.T) {
+	s := newTestServer(t, whoIs(t, "sender", wormholeGrantPut("tag:agent")), &fakeMinter{})
+	nodeOneValue := []byte("unique-node-one-secret")
+	nodeTwoValue := []byte("unique-node-two-secret")
+	putWormhole(t, s, "sender", "node-1", "one/key", nodeOneValue, false)
+	putWormhole(t, s, "sender", "node-2", "two/key", nodeTwoValue, false)
+
+	setCaller(s, "node-1", wormholeGrantGet())
+	req := httptest.NewRequest(http.MethodGet,
+		"/v1/wormhole/list?recipient_node_id=node-2",
+		strings.NewReader(`{"recipient_node_id":"node-2"}`))
+	req.Header.Set("X-Recipient-Node-ID", "node-2")
+	rec := httptest.NewRecorder()
+	s.TailnetHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list got %d: %s", rec.Code, rec.Body)
+	}
+	var got WormholeListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Key != "one/key" ||
+		got.Items[0].SenderNodeID != "sender" ||
+		got.Items[0].SenderNodeName != "sender.example.ts.net" ||
+		got.Items[0].SizeBytes != len(nodeOneValue) {
+		t.Fatalf("list returned %+v, want only node-1 metadata", got.Items)
+	}
+	for _, value := range [][]byte{nodeOneValue, nodeTwoValue} {
+		hash := sha256.Sum256(value)
+		for _, forbidden := range []string{
+			string(value),
+			hex.EncodeToString(hash[:]),
+		} {
+			if strings.Contains(rec.Body.String(), forbidden) {
+				t.Errorf("list response revealed payload material %q: %s", forbidden, rec.Body)
+			}
+		}
+	}
+
+	setCaller(s, "node-2", wormholeGrantGet())
+	rec = httptest.NewRecorder()
+	s.TailnetHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/wormhole/list", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"two/key"`) {
+		t.Fatalf("listing as node-1 disturbed node-2 item: %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestWormholeListRequiresGetCapabilityAndOmitsExpiredItems(t *testing.T) {
+	now := testTime
+	s := newTestServer(t, whoIs(t, "sender", wormholeGrantPut("tag:agent")), &fakeMinter{})
+	s.Wormhole.SetClock(func() time.Time { return now })
+	putWormhole(t, s, "sender", "node-1", "expired", []byte("secret"), false)
+
+	setCaller(s, "node-1")
+	rec := httptest.NewRecorder()
+	s.TailnetHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/wormhole/list", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("list without get capability got %d, want 403: %s", rec.Code, rec.Body)
+	}
+
+	now = now.Add(wormhole.DefaultTTL)
+	setCaller(s, "node-1", wormholeGrantGet())
+	rec = httptest.NewRecorder()
+	s.TailnetHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/wormhole/list", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list expired got %d: %s", rec.Code, rec.Body)
+	}
+	var got WormholeListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 0 {
+		t.Fatalf("list returned expired items: %+v", got.Items)
+	}
+}
+
 func TestWormholeGetZeroesConsumedBufferAfterWritingResponse(t *testing.T) {
 	s := newTestServer(t, whoIs(t, "node-1", wormholeGrantGet()), &fakeMinter{})
 	value := []byte("secret")

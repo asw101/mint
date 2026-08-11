@@ -155,6 +155,11 @@ wormhole-put *args: build
 wormhole-get *args: build
     @"{{ binary }}" wormhole get "$@"
 
+# List metadata for mailbox items addressed to this node.
+[group('client')]
+wormhole-list *args: build
+    @"{{ binary }}" wormhole list "$@"
+
 # Discard a mailbox item without revealing it.
 [group('client')]
 wormhole-discard *args: build

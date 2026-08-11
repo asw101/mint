@@ -80,6 +80,99 @@ func TestConsumeIsAtomicAndAtMostOnce(t *testing.T) {
 	}
 }
 
+func TestKeyOnlyConsumeRejectsAmbiguityWithoutConsumingEitherItem(t *testing.T) {
+	s := testStore()
+	put(t, s, "sender-2", "recipient", "same-key", []byte("from two"))
+	put(t, s, "sender-1", "recipient", "same-key", []byte("from one"))
+
+	_, err := s.Consume("recipient", "", "same-key")
+	var ambiguous *AmbiguousError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("Consume got %v, want AmbiguousError", err)
+	}
+	if len(ambiguous.Senders) != 2 ||
+		ambiguous.Senders[0].NodeID != "sender-1" ||
+		ambiguous.Senders[1].NodeID != "sender-2" {
+		t.Fatalf("candidate senders = %+v, want sender-1 and sender-2", ambiguous.Senders)
+	}
+	for _, sender := range []string{"sender-1", "sender-2"} {
+		item, err := s.Consume("recipient", sender, "same-key")
+		if err != nil {
+			t.Fatalf("Consume %s after ambiguity: %v", sender, err)
+		}
+		zero(item.Value)
+	}
+}
+
+func TestKeyOnlyResolutionHandlesOneOrNoSender(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		discard bool
+	}{
+		{name: "consume"},
+		{name: "discard", discard: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStore()
+			value := []byte("secret")
+			put(t, s, "sender", "recipient", "key", value)
+
+			if tc.discard {
+				if err := s.Discard("recipient", "", "key"); err != nil {
+					t.Fatalf("Discard: %v", err)
+				}
+				if !allZero(value) {
+					t.Fatal("Discard did not zero the resolved value")
+				}
+				if err := s.Discard("recipient", "", "key"); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("second Discard got %v, want ErrNotFound", err)
+				}
+				return
+			}
+
+			item, err := s.Consume("recipient", "", "key")
+			if err != nil {
+				t.Fatalf("Consume: %v", err)
+			}
+			if string(item.Value) != "secret" {
+				t.Fatalf("Consume returned %q", item.Value)
+			}
+			zero(item.Value)
+			if _, err := s.Consume("recipient", "", "key"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("second Consume got %v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
+func TestListReturnsOnlyRecipientMetadataAndPrunesExpiredItems(t *testing.T) {
+	now := testTime
+	s := testStore()
+	s.SetClock(func() time.Time { return now })
+	put(t, s, "sender-2", "recipient", "later", []byte("12345"))
+	put(t, s, "sender-1", "recipient", "first", []byte("123"))
+
+	now = now.Add(DefaultTTL)
+	live := []byte("1234")
+	put(t, s, "sender-4", "recipient", "live", live)
+	other := []byte("other")
+	put(t, s, "sender-3", "other-recipient", "hidden", other)
+
+	got := s.List("recipient")
+	if len(got) != 1 {
+		t.Fatalf("List returned %+v, want one live item", got)
+	}
+	if got[0].Sender.NodeID != "sender-4" || got[0].Key != "live" ||
+		got[0].CreatedAt != now || got[0].ExpiresAt != now.Add(DefaultTTL) ||
+		got[0].SizeBytes != len(live) {
+		t.Errorf("List returned %+v", got[0])
+	}
+	if _, err := s.Consume("other-recipient", "sender-3", "hidden"); err != nil {
+		t.Fatalf("List disturbed another recipient's item: %v", err)
+	}
+	zero(other)
+}
+
 func TestPutRefusesOverwriteUnlessReplacementIsExplicit(t *testing.T) {
 	s := testStore()
 	old := []byte("old credential")

@@ -139,13 +139,33 @@ producer |
 Consume it directly into a stdin-aware program:
 
 ```sh
-tsapp wormhole get --from <sender-node> --key <purpose/key> |
+tsapp wormhole get --key <purpose/key> |
   consumer
 ```
 
-`--to`, `--from`, and `--key` are mandatory. Sender identity is part of the
-mailbox address and prevents another authorized sender from substituting a
-value under the same key. Always use a short explicit TTL.
+`--to` and `--key` are mandatory. `--from` is optional: omit it for the common
+case where exactly one sender has used the key, and pass it when you need
+certainty about who sent the item:
+
+```sh
+tsapp wormhole get --key <purpose/key> --from <sender-node> |
+  consumer
+```
+
+Sender identity remains part of the mailbox address. Without `--from`, the
+daemon consumes only when exactly one sender matches; multiple senders make the
+fetch fail without consuming anything. Always use a short explicit TTL.
+
+Discover what is addressed to this node without exposing any values:
+
+```sh
+tsapp wormhole list
+tsapp wormhole list --json
+```
+
+`list` shows metadata only — sender, key, creation and expiry times, and size —
+never a value, any part of one, or a hash. It is safe to run and safe to show
+the user, unlike a `get`.
 
 Use explicit replacement only when the source credential was regenerated:
 
@@ -161,7 +181,7 @@ Never add `--replace` merely to make a `409` retry succeed.
 When the task is cancelled, discard without revealing:
 
 ```sh
-tsapp wormhole discard --from <sender-node> --key <purpose/key>
+tsapp wormhole discard --key <purpose/key> [--from <sender-node>]
 ```
 
 ### Wormhole rules
@@ -171,14 +191,25 @@ tsapp wormhole discard --from <sender-node> --key <purpose/key>
 - Pipe `wormhole get` directly into the consumer where possible.
 - Never use a value flag, command argument, `set -x`, ordinary temporary file,
   chat, issue comment, clipboard, or committed file for the secret.
-- Never omit `--from`. The expected sender is a security boundary.
-- **Never retry an ambiguous `get`.** Exit `1` may mean the daemon consumed the
-  item and the response was lost. Request a newly created credential.
+- Omit `--from` for the common unambiguous case. Pass it when certainty about
+  the sender matters.
+- If a fetch reports multiple candidate senders, **stop and show the named
+  senders to the user. Never guess one and never loop over them.** Each guess is
+  an at-most-once consume of somebody's secret, and consuming the wrong one
+  destroys it.
+- **Never retry a transport-ambiguous `get`.** Exit `1` may mean the daemon
+  consumed the item and the response was lost. Request a newly created
+  credential.
 - On exit `1` after an ambiguous `put`, ask the recipient to attempt the
   expected get once. If it is absent, reissue the source credential under a new
   key; do not loop the put.
-- On absent, expired, or consumed output, request a newly created credential.
-  A mailbox item cannot be restored.
+- When a `get` returns absent, run `wormhole list` before concluding the item is
+  not there. The sender or key may differ from what was assumed, especially
+  because client node names auto-number and say nothing about the machine. If
+  list confirms it is absent, request a newly created credential; a consumed
+  mailbox item cannot be restored.
+- `list` is metadata-only and safe to show the user. A token or wormhole value
+  must never be printed, echoed, written to a file, or included in a reply.
 - On exit `3`, stop. Policy denial is not an obstacle to bypass, and another
   transport or credential is not an acceptable fallback.
 - Use `discard` when the handoff is cancelled.

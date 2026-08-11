@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/asw101/tsapp/internal/policy"
@@ -57,10 +58,10 @@ type WormholePutResponse struct {
 	Replaced          bool      `json:"replaced"`
 }
 
-// WormholeGetRequest names the expected sender. The recipient has no request
-// field: it is always the caller identified by WhoIs.
+// WormholeGetRequest names an optional expected sender. The recipient has no
+// request field: it is always the caller identified by WhoIs.
 type WormholeGetRequest struct {
-	From string `json:"from"`
+	From string `json:"from,omitempty"`
 	Key  string `json:"key"`
 }
 
@@ -78,6 +79,21 @@ type WormholeGetResponse struct {
 // WormholeDiscardResponse confirms removal without revealing the value.
 type WormholeDiscardResponse struct {
 	Status string `json:"status"`
+}
+
+// WormholeListItem describes one item without exposing its value.
+type WormholeListItem struct {
+	SenderNodeID   string    `json:"sender_node_id"`
+	SenderNodeName string    `json:"sender_node_name"`
+	Key            string    `json:"key"`
+	CreatedAt      time.Time `json:"created_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	SizeBytes      int       `json:"size_bytes"`
+}
+
+// WormholeListResponse contains only items addressed to the caller.
+type WormholeListResponse struct {
+	Items []WormholeListItem `json:"items"`
 }
 
 // StartWormhole connects audit logging and starts the periodic expiry sweep.
@@ -202,10 +218,6 @@ func (s *Server) handleWormholeGet(w http.ResponseWriter, r *http.Request) {
 	if !decodeWormholeJSON(w, r, maxWormholeBody, &req) {
 		return
 	}
-	if req.From == "" {
-		writeJSON(w, http.StatusBadRequest, StatusResponse{Status: "error", Reason: "from is required"})
-		return
-	}
 	if err := wormhole.ValidateKey(req.Key); err != nil {
 		writeJSON(w, http.StatusBadRequest, StatusResponse{Status: "error", Reason: err.Error()})
 		return
@@ -216,20 +228,32 @@ func (s *Server) handleWormholeGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sender, err := s.resolvePeer(r, req.From)
-	if err != nil {
-		s.writePeerResolutionError(w, "GET", recipient, err)
-		return
+	var sender ResolvedPeer
+	if req.From != "" {
+		sender, err = s.resolvePeer(r, req.From)
+		if err != nil {
+			s.writePeerResolutionError(w, "GET", recipient, err)
+			return
+		}
 	}
 	item, err := s.Wormhole.Consume(recipient.NodeID, sender.NodeID, req.Key)
 	if err != nil {
-		if errors.Is(err, wormhole.ErrNotFound) {
-			s.logf("wormhole: GET sender=%s (%s) recipient=%s (%s) result=absent",
-				sender.NodeName, sender.NodeID, recipient.NodeName, recipient.NodeID)
+		switch {
+		case errors.Is(err, wormhole.ErrNotFound):
+			if sender.NodeID == "" {
+				s.logf("wormhole: GET recipient=%s (%s) result=absent",
+					recipient.NodeName, recipient.NodeID)
+			} else {
+				s.logf("wormhole: GET sender=%s (%s) recipient=%s (%s) result=absent",
+					sender.NodeName, sender.NodeID, recipient.NodeName, recipient.NodeID)
+			}
 			writeJSON(w, http.StatusNotFound, StatusResponse{
 				Status: "absent",
 				Reason: "wormhole item is absent, expired, or already consumed",
 			})
+			return
+		case errors.Is(err, wormhole.ErrAmbiguous):
+			s.writeWormholeAmbiguous(w, "GET", recipient, err)
 			return
 		}
 		s.logf("wormhole: GET sender=%s (%s) recipient=%s (%s) result=error: %v",
@@ -261,28 +285,36 @@ func (s *Server) handleWormholeDiscard(w http.ResponseWriter, r *http.Request) {
 	if !decodeWormholeJSON(w, r, maxWormholeBody, &req) {
 		return
 	}
-	if req.From == "" {
-		writeJSON(w, http.StatusBadRequest, StatusResponse{Status: "error", Reason: "from is required"})
-		return
-	}
 	if err := wormhole.ValidateKey(req.Key); err != nil {
 		writeJSON(w, http.StatusBadRequest, StatusResponse{Status: "error", Reason: err.Error()})
 		return
 	}
 
-	sender, err := s.resolvePeer(r, req.From)
-	if err != nil {
-		s.writePeerResolutionError(w, "DISCARD", recipient, err)
-		return
+	var sender ResolvedPeer
+	if req.From != "" {
+		sender, err = s.resolvePeer(r, req.From)
+		if err != nil {
+			s.writePeerResolutionError(w, "DISCARD", recipient, err)
+			return
+		}
 	}
 	if err := s.Wormhole.Discard(recipient.NodeID, sender.NodeID, req.Key); err != nil {
-		if errors.Is(err, wormhole.ErrNotFound) {
-			s.logf("wormhole: DISCARD sender=%s (%s) recipient=%s (%s) result=absent",
-				sender.NodeName, sender.NodeID, recipient.NodeName, recipient.NodeID)
+		switch {
+		case errors.Is(err, wormhole.ErrNotFound):
+			if sender.NodeID == "" {
+				s.logf("wormhole: DISCARD recipient=%s (%s) result=absent",
+					recipient.NodeName, recipient.NodeID)
+			} else {
+				s.logf("wormhole: DISCARD sender=%s (%s) recipient=%s (%s) result=absent",
+					sender.NodeName, sender.NodeID, recipient.NodeName, recipient.NodeID)
+			}
 			writeJSON(w, http.StatusNotFound, StatusResponse{
 				Status: "absent",
 				Reason: "wormhole item is absent, expired, or already consumed",
 			})
+			return
+		case errors.Is(err, wormhole.ErrAmbiguous):
+			s.writeWormholeAmbiguous(w, "DISCARD", recipient, err)
 			return
 		}
 		s.logf("wormhole: DISCARD sender=%s (%s) recipient=%s (%s) result=error: %v",
@@ -291,6 +323,36 @@ func (s *Server) handleWormholeDiscard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, WormholeDiscardResponse{Status: "discarded"})
+}
+
+// handleWormholeList reports metadata addressed to the caller identified by
+// WhoIs. It never reads a recipient from the body, query, or headers.
+func (s *Server) handleWormholeList(w http.ResponseWriter, r *http.Request) {
+	recipient, err := s.identify(r)
+	if err != nil {
+		s.logf("wormhole: LIST caller=%s result=unidentified: %v", r.RemoteAddr, err)
+		writeJSON(w, http.StatusForbidden, StatusResponse{Status: "denied", Reason: "caller could not be identified"})
+		return
+	}
+	if !policy.AllowsWormholeGet(recipient.Grants) {
+		s.logf("wormhole: LIST recipient=%s (%s) result=denied", recipient.NodeName, recipient.NodeID)
+		writeJSON(w, http.StatusForbidden, StatusResponse{Status: "denied", Reason: "tailnet policy does not allow wormhole get"})
+		return
+	}
+
+	metadata := s.Wormhole.List(recipient.NodeID)
+	items := make([]WormholeListItem, 0, len(metadata))
+	for _, item := range metadata {
+		items = append(items, WormholeListItem{
+			SenderNodeID:   item.Sender.NodeID,
+			SenderNodeName: item.Sender.NodeName,
+			Key:            item.Key,
+			CreatedAt:      item.CreatedAt,
+			ExpiresAt:      item.ExpiresAt,
+			SizeBytes:      item.SizeBytes,
+		})
+	}
+	writeJSON(w, http.StatusOK, WormholeListResponse{Items: items})
 }
 
 func (s *Server) resolvePeer(r *http.Request, name string) (ResolvedPeer, error) {
@@ -308,6 +370,29 @@ func (s *Server) writePeerResolutionError(w http.ResponseWriter, action string, 
 	}
 	s.logf("wormhole: %s caller=%s (%s) result=resolver-error: %v", action, caller.NodeName, caller.NodeID, err)
 	writeJSON(w, http.StatusInternalServerError, StatusResponse{Status: "error", Reason: "could not resolve tailnet peer"})
+}
+
+func (s *Server) writeWormholeAmbiguous(w http.ResponseWriter, action string, recipient policy.Identity, err error) {
+	var ambiguous *wormhole.AmbiguousError
+	if !errors.As(err, &ambiguous) {
+		writeJSON(w, http.StatusInternalServerError, StatusResponse{Status: "error", Reason: "could not resolve wormhole sender"})
+		return
+	}
+	names := make([]string, 0, len(ambiguous.Senders))
+	for _, sender := range ambiguous.Senders {
+		name := sender.NodeName
+		if name == "" {
+			name = sender.NodeID
+		}
+		names = append(names, name)
+	}
+	s.logf("wormhole: %s recipient=%s (%s) candidate-senders=%s result=ambiguous",
+		action, recipient.NodeName, recipient.NodeID, strings.Join(names, ","))
+	writeJSON(w, http.StatusConflict, StatusResponse{
+		Status: "ambiguous",
+		Reason: "multiple senders have a wormhole item under this key: " +
+			strings.Join(names, ", ") + "; retry with --from",
+	})
 }
 
 func (s *Server) logWormholeEvent(event wormhole.Event) {

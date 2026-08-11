@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"sync"
 	"time"
 )
@@ -19,9 +20,10 @@ const (
 )
 
 var (
-	ErrNotFound = errors.New("wormhole item not found")
-	ErrOccupied = errors.New("wormhole tuple occupied")
-	ErrQuota    = errors.New("wormhole quota exceeded")
+	ErrNotFound  = errors.New("wormhole item not found")
+	ErrAmbiguous = errors.New("wormhole item has multiple senders")
+	ErrOccupied  = errors.New("wormhole tuple occupied")
+	ErrQuota     = errors.New("wormhole quota exceeded")
 
 	validKey = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 )
@@ -63,6 +65,28 @@ type Item struct {
 	CreatedAt time.Time
 	ExpiresAt time.Time
 	Value     []byte
+}
+
+// ItemMetadata describes a live handoff without exposing its value.
+type ItemMetadata struct {
+	Key       string
+	Sender    Peer
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	SizeBytes int
+}
+
+// AmbiguousError reports the senders that prevent key-only resolution.
+type AmbiguousError struct {
+	Senders []Peer
+}
+
+func (e *AmbiguousError) Error() string {
+	return ErrAmbiguous.Error()
+}
+
+func (e *AmbiguousError) Unwrap() error {
+	return ErrAmbiguous
 }
 
 // PutResult reports whether Put displaced an unconsumed item.
@@ -227,20 +251,19 @@ func (s *Store) Put(sender, recipient Peer, key string, value []byte, ttl time.D
 	return result, nil
 }
 
-// Consume atomically removes and returns the matching item. The caller owns
+// Consume atomically resolves, removes, and returns the matching item. An empty
+// senderID resolves only when exactly one sender has the key. The caller owns
 // Value and must zero it after writing or abandoning the response.
 func (s *Store) Consume(recipientID, senderID, key string) (Item, error) {
-	now := s.currentTime()
-	addr := address{recipient: recipientID, sender: senderID, key: key}
-
 	s.mu.Lock()
+	now := s.currentTimeLocked()
 	events := s.pruneExpiredLocked(now)
-	item := s.items[addr]
-	if item == nil {
+	addr, item, err := s.resolveLocked(recipientID, senderID, key)
+	if err != nil {
 		sink := s.onEvent
 		s.mu.Unlock()
 		s.emit(sink, events)
-		return Item{}, ErrNotFound
+		return Item{}, err
 	}
 	delete(s.items, addr)
 	s.totalBytes -= len(item.Value)
@@ -252,19 +275,19 @@ func (s *Store) Consume(recipientID, senderID, key string) (Item, error) {
 	return *item, nil
 }
 
-// Discard removes and zeroes the matching item without revealing it.
+// Discard atomically resolves, removes, and zeroes the matching item without
+// revealing it. An empty senderID resolves only when exactly one sender has the
+// key.
 func (s *Store) Discard(recipientID, senderID, key string) error {
-	now := s.currentTime()
-	addr := address{recipient: recipientID, sender: senderID, key: key}
-
 	s.mu.Lock()
+	now := s.currentTimeLocked()
 	events := s.pruneExpiredLocked(now)
-	item := s.items[addr]
-	if item == nil {
+	addr, item, err := s.resolveLocked(recipientID, senderID, key)
+	if err != nil {
 		sink := s.onEvent
 		s.mu.Unlock()
 		s.emit(sink, events)
-		return ErrNotFound
+		return err
 	}
 	delete(s.items, addr)
 	s.totalBytes -= len(item.Value)
@@ -275,6 +298,40 @@ func (s *Store) Discard(recipientID, senderID, key string) error {
 
 	s.emit(sink, append(events, event))
 	return nil
+}
+
+// List returns metadata for live items addressed to recipientID.
+func (s *Store) List(recipientID string) []ItemMetadata {
+	s.mu.Lock()
+	now := s.currentTimeLocked()
+	events := s.pruneExpiredLocked(now)
+	items := make([]ItemMetadata, 0)
+	for addr, item := range s.items {
+		if addr.recipient != recipientID {
+			continue
+		}
+		items = append(items, ItemMetadata{
+			Key:       item.Key,
+			Sender:    item.Sender,
+			CreatedAt: item.CreatedAt,
+			ExpiresAt: item.ExpiresAt,
+			SizeBytes: len(item.Value),
+		})
+	}
+	sink := s.onEvent
+	s.mu.Unlock()
+
+	s.emit(sink, events)
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].CreatedAt.Before(items[j].CreatedAt)
+		}
+		if items[i].Key != items[j].Key {
+			return items[i].Key < items[j].Key
+		}
+		return items[i].Sender.NodeID < items[j].Sender.NodeID
+	})
+	return items
 }
 
 // DropRecipient removes and zeroes every item addressed to recipientID. Items
@@ -389,6 +446,43 @@ func (s *Store) checkQuotaLocked(existing *Item, senderID, recipientID string, v
 		return fmt.Errorf("%w: recipient item limit", ErrQuota)
 	}
 	return nil
+}
+
+func (s *Store) resolveLocked(recipientID, senderID, key string) (address, *Item, error) {
+	if senderID != "" {
+		addr := address{recipient: recipientID, sender: senderID, key: key}
+		item := s.items[addr]
+		if item == nil {
+			return address{}, nil, ErrNotFound
+		}
+		return addr, item, nil
+	}
+
+	var matchedAddress address
+	var matchedItem *Item
+	var senders []Peer
+	for addr, item := range s.items {
+		if addr.recipient != recipientID || addr.key != key {
+			continue
+		}
+		matchedAddress = addr
+		matchedItem = item
+		senders = append(senders, item.Sender)
+	}
+	switch len(senders) {
+	case 0:
+		return address{}, nil, ErrNotFound
+	case 1:
+		return matchedAddress, matchedItem, nil
+	default:
+		sort.Slice(senders, func(i, j int) bool {
+			if senders[i].NodeName != senders[j].NodeName {
+				return senders[i].NodeName < senders[j].NodeName
+			}
+			return senders[i].NodeID < senders[j].NodeID
+		})
+		return address{}, nil, &AmbiguousError{Senders: senders}
+	}
 }
 
 func (s *Store) pruneExpiredLocked(now time.Time) []Event {

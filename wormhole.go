@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"tailscale.com/ipn/ipnstate"
@@ -22,14 +23,15 @@ import (
 
 const wormholeUsage = `Usage:
   tsapp wormhole put --to NODE --key KEY [--ttl 10m] [--replace]
-  tsapp wormhole get --from NODE --key KEY
-  tsapp wormhole discard --from NODE --key KEY
+  tsapp wormhole get --key KEY [--from NODE]
+  tsapp wormhole discard --key KEY [--from NODE]
+  tsapp wormhole list [--json]
 `
 
 func cmdWormhole(args []string) error {
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, wormholeUsage)
-		return errors.New("wormhole needs put, get, or discard")
+		return errors.New("wormhole needs put, get, discard, or list")
 	}
 	switch args[0] {
 	case "put":
@@ -38,6 +40,8 @@ func cmdWormhole(args []string) error {
 		return cmdWormholeGet(args[1:])
 	case "discard":
 		return cmdWormholeDiscard(args[1:])
+	case "list":
+		return cmdWormholeList(args[1:])
 	default:
 		return fmt.Errorf("unknown wormhole command %q", args[0])
 	}
@@ -127,8 +131,8 @@ func cmdWormholeGet(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 || *from == "" || *key == "" {
-		return errors.New("usage: tsapp wormhole get --from NODE --key KEY")
+	if fs.NArg() != 0 || *key == "" {
+		return errors.New("usage: tsapp wormhole get --key KEY [--from NODE]")
 	}
 	if err := wormhole.ValidateKey(*key); err != nil {
 		return err
@@ -180,8 +184,8 @@ func cmdWormholeDiscard(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 || *from == "" || *key == "" {
-		return errors.New("usage: tsapp wormhole discard --from NODE --key KEY")
+	if fs.NArg() != 0 || *key == "" {
+		return errors.New("usage: tsapp wormhole discard --key KEY [--from NODE]")
 	}
 	if err := wormhole.ValidateKey(*key); err != nil {
 		return err
@@ -213,6 +217,77 @@ func cmdWormholeDiscard(args []string) error {
 	}
 	fmt.Fprintln(os.Stderr, "tsapp: discarded wormhole item")
 	return nil
+}
+
+func cmdWormholeList(args []string) error {
+	fs := flag.NewFlagSet("wormhole list", flag.ContinueOnError)
+	var cf clientFlags
+	cf.bind(fs)
+	asJSON := fs.Bool("json", false, "print the full response")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: tsapp wormhole list [--json]")
+	}
+
+	ctx, stop := signalContext()
+	defer stop()
+	srv, httpClient, err := cf.dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer srv.Close()
+
+	if err := settleTailnet(ctx, httpClient, cf.server); err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimSuffix(cf.server, "/")+"/v1/wormhole/list", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("reach %s: %w", cf.server, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return wormholeHTTPError(resp)
+	}
+	var result server.WormholeListResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&result); err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(result)
+	}
+	return reportWormholeList(os.Stdout, result)
+}
+
+func reportWormholeList(w io.Writer, result server.WormholeListResponse) error {
+	if len(result.Items) == 0 {
+		_, err := fmt.Fprintln(w, "No wormhole items are addressed to this node.")
+		return err
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "SENDER\tSENDER ID\tKEY\tCREATED\tEXPIRES\tBYTES"); err != nil {
+		return err
+	}
+	for _, item := range result.Items {
+		name := item.SenderNodeName
+		if name == "" {
+			name = item.SenderNodeID
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\n",
+			name, item.SenderNodeID, item.Key,
+			item.CreatedAt.Format(time.RFC3339), item.ExpiresAt.Format(time.RFC3339), item.SizeBytes); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
 }
 
 const maxWormholeResponseBytes = (wormhole.MaxValueBytes*4+2)/3 + 4096

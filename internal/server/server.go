@@ -94,6 +94,7 @@ func (s *Server) TailnetHandler() http.Handler {
 	mux.HandleFunc("POST /v1/wormhole/put", s.handleWormholePut)
 	mux.HandleFunc("POST /v1/wormhole/get", s.handleWormholeGet)
 	mux.HandleFunc("POST /v1/wormhole/discard", s.handleWormholeDiscard)
+	mux.HandleFunc("GET /v1/wormhole/list", s.handleWormholeList)
 	mux.HandleFunc("GET /v1/whoami", s.handleWhoami)
 	return mux
 }
