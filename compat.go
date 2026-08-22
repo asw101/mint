@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 )
 
@@ -88,6 +90,16 @@ func legacyPrefix2Env(key string) string {
 	return "TSAPP_" + strings.TrimPrefix(key, "MINT_")
 }
 
+// peerWait bounds how long resolveServer waits for the netmap.
+//
+// tsnet returns from Up as soon as the node is Running, which is before its
+// view of the tailnet's other nodes has arrived: on a cold client the peer list
+// is empty for a moment. That moment is longer than the question takes to
+// answer, so waiting is the difference between this check working and this
+// check silently doing nothing. It is bounded because the answer only matters
+// during the rename, and a client must not hang on it.
+const peerWait = 5 * time.Second
+
 // resolveServer picks the daemon's address when the caller did not choose one.
 //
 // The migration order that keeps everyone reachable is clients first, daemon
@@ -96,8 +108,8 @@ func legacyPrefix2Env(key string) string {
 // tailnet who is actually there. `mint` wins whenever it exists, so this stops
 // mattering the moment the daemon is renamed.
 //
-// Any failure here leaves server untouched: this is a convenience, and a
-// broken probe must not be able to break a working client.
+// Any failure here leaves server untouched: this is a convenience, and a broken
+// probe must not be able to break a working client.
 //
 // Removable once the daemon has been renamed on every tailnet mint serves.
 func resolveServer(ctx context.Context, srv *tsnet.Server, server string) string {
@@ -108,24 +120,40 @@ func resolveServer(ctx context.Context, srv *tsnet.Server, server string) string
 	if err != nil {
 		return server
 	}
-	status, err := lc.Status(ctx)
-	if err != nil || status == nil {
-		return server
-	}
-	var sawLegacy bool
-	for _, peer := range status.Peer {
-		switch hostOf(peer.DNSName) {
-		case "mint":
+
+	deadline := time.Now().Add(peerWait)
+	for {
+		status, err := lc.Status(ctx)
+		if err != nil {
 			return server
-		case legacyPrefix:
-			sawLegacy = true
+		}
+		if status != nil && len(status.Peer) > 0 {
+			if !hasPeer(status.Peer, legacyPrefix) || hasPeer(status.Peer, "mint") {
+				return server
+			}
+			fmt.Fprintf(os.Stderr, "mint: no mint node on this tailnet; using %s\n", legacyServer)
+			return legacyServer
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return server
+		}
+		select {
+		case <-ctx.Done():
+			return server
+		case <-time.After(250 * time.Millisecond):
 		}
 	}
-	if !sawLegacy {
-		return server
+}
+
+// hasPeer reports whether any peer's MagicDNS name starts with the given host
+// label.
+func hasPeer[K comparable](peers map[K]*ipnstate.PeerStatus, host string) bool {
+	for _, peer := range peers {
+		if peer != nil && hostOf(peer.DNSName) == host {
+			return true
+		}
 	}
-	fmt.Fprintf(os.Stderr, "mint: no %q node on this tailnet; using %s\n", "mint", legacyServer)
-	return legacyServer
+	return false
 }
 
 // hostOf takes the first label of a MagicDNS name: "tsapp.tail1234.ts.net."
