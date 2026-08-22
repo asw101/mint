@@ -228,3 +228,23 @@ func TestServeRejectsAPolicyCredentialEndToEnd(t *testing.T) {
 		t.Fatalf("got %v, want serve to refuse to start", err)
 	}
 }
+
+// F-005 in this workspace's friction log is `az login --password`: a secret in
+// argv, readable from /proc/<pid>/cmdline by anything running as the same user.
+// The documented Tailscale OAuth exchange has the same shape
+// (`curl -d client_secret=...`). mint has no flag that takes a secret value, and
+// this is what keeps somebody from adding one for convenience.
+func TestPolicyHasNoSecretValueFlag(t *testing.T) {
+	for _, arg := range []string{
+		"--client-secret", "--secret", "--api-key", "--token", "--password",
+	} {
+		err := cmdPolicy([]string{"fetch", arg, "tskey-client-x-y"})
+		if err == nil {
+			t.Errorf("%s was accepted; secrets must come from a file or stdin", arg)
+			continue
+		}
+		if !strings.Contains(err.Error(), "flag provided but not defined") {
+			t.Errorf("%s failed with %v, want it to be an unknown flag", arg, err)
+		}
+	}
+}

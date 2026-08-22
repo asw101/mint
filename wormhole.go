@@ -21,12 +21,44 @@ import (
 	"github.com/asw101/mint/internal/wormhole"
 )
 
-const wormholeUsage = `Usage:
-  mint wormhole put --to NODE --key KEY [--ttl 10m] [--replace]
+// wormholeUsage is built from the constants it describes, so the limits cannot
+// drift from what the store actually enforces. They are stated here rather than
+// left to be discovered by refusal: each is a design decision, and a bound that
+// looks arbitrary invites someone to raise it without reading why.
+var wormholeUsage = fmt.Sprintf(`Usage:
+  mint wormhole put --to NODE --key KEY [--ttl %s] [--replace]
   mint wormhole get --key KEY [--from NODE]
   mint wormhole discard --key KEY [--from NODE]
   mint wormhole list [--json]
-`
+
+Limits:
+  --ttl        default %s, maximum %s
+  value        %d KiB, read from stdin
+  key          %d bytes, [A-Za-z0-9._/-]
+
+The maximum lifetime is short on purpose. This is an ephemeral mailbox for a
+handoff, not storage: an item nobody collects is a secret sitting in memory for
+however long you allowed, and the window is the exposure. Items are held in
+memory only and are never written to disk, so a daemon restart drops them
+whatever their TTL, and a longer one would promise a durability that does not
+exist. Deposit close to when the recipient will collect.
+`, shortDuration(wormhole.DefaultTTL), shortDuration(wormhole.DefaultTTL),
+	shortDuration(wormhole.MaxTTL), wormhole.MaxValueBytes>>10, wormhole.MaxKeyBytes)
+
+// shortDuration writes a whole-unit duration the way a person would type it:
+// "10m" rather than Go's "10m0s".
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	// Only drop a zero unit that something larger precedes: "30s" is already
+	// as short as it goes.
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
 
 func cmdWormhole(args []string) error {
 	if len(args) == 0 {

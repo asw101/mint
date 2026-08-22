@@ -254,3 +254,35 @@ func TestSettleTailnetAbsorbsColdStartThenTheRequestGoesOutOnce(t *testing.T) {
 		t.Errorf("wormhole endpoint hit %d times, want exactly 1", wormholeCalls)
 	}
 }
+
+// The wormhole limits are design decisions, and one discovered only by being
+// refused reads as arbitrary: the rationale for the one-hour ceiling used to
+// live in an issue rather than anywhere a user would look. Help is generated
+// from the constants, and this is what keeps the two from drifting apart.
+func TestWormholeHelpStatesTheLimits(t *testing.T) {
+	for _, want := range []string{
+		"maximum 1h",
+		"default 10m",
+		"256 KiB",
+		"128 bytes",
+		"memory only",
+	} {
+		if !strings.Contains(wormholeUsage, want) {
+			t.Errorf("wormhole help does not mention %q:\n%s", want, wormholeUsage)
+		}
+	}
+}
+
+func TestShortDuration(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		time.Hour:               "1h",
+		10 * time.Minute:        "10m",
+		90 * time.Minute:        "1h30m",
+		30 * time.Second:        "30s",
+		time.Hour + time.Second: "1h0m1s",
+	} {
+		if got := shortDuration(d); got != want {
+			t.Errorf("shortDuration(%s) = %q, want %q", d, got, want)
+		}
+	}
+}

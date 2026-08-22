@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+// The bounds on an item. MaxTTL is deliberately short: this is a mailbox for a
+// handoff rather than storage, and an item nobody collects is a secret held for
+// as long as the TTL allowed. Items live in memory only and never reach disk, so
+// a daemon restart drops them however long their TTL, and a larger ceiling would
+// promise a durability the storage model does not have. `mint wormhole --help`
+// says the same thing, because a limit only discovered by being refused reads as
+// arbitrary.
 const (
 	MaxKeyBytes   = 128
 	MaxValueBytes = 256 << 10
