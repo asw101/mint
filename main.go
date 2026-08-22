@@ -44,6 +44,8 @@ Usage:
   mint wormhole discard --key KEY [--from NODE]
   mint wormhole list [--json]
 
+  mint policy fetch|diff|validate|apply    manage the tailnet policy file
+
   mint version                    print the version and how it was built
 
   mint pending                    list requests awaiting approval
@@ -167,6 +169,8 @@ func run(args []string) error {
 		return cmdDrop(args[1:])
 	case "wormhole":
 		return cmdWormhole(args[1:])
+	case "policy":
+		return cmdPolicy(args[1:])
 	case "pending":
 		return cmdAdminList(args[1:], "/v1/pending")
 	case "approvals":
@@ -249,6 +253,13 @@ func short(revision string) string {
 // --- serve ---
 
 func cmdServe(args []string) error {
+	// Before anything else: the daemon must not be holding a credential that
+	// can rewrite the tailnet policy that authorizes it. See
+	// refuseIfPolicyCredentialPresent.
+	if err := refuseIfPolicyCredentialPresent(os.LookupEnv); err != nil {
+		return err
+	}
+
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	hostname := fs.String("hostname", "mint", "tailnet name to claim")
 	stateDir := fs.String("state-dir", defaultStateDir("mint"), "tsnet state and approvals")

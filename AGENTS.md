@@ -18,6 +18,9 @@ implements.
 | `internal/policy/engine.go` | The decision: allowed, pending, or denied. |
 | `internal/server/server.go` | The tailnet and admin HTTP surfaces. |
 | `internal/app/` | GitHub App JWT signing and token minting. |
+| `internal/tspolicy/` | The Tailscale API client for the tailnet policy file. |
+| `policy_cli.go` | `mint policy`: fetch, diff, validate, apply. Operator only. |
+| `compat.go` | Everything that keeps the old `tsapp` name working. |
 
 `internal/app` is **mint's own code**. It began as a copy of the same package in
 `asw101/ghapp`, mint's predecessor, and mint is now the surviving consumer:
@@ -40,6 +43,16 @@ pointing back at the retired predecessor gets the arrow backwards.
   unsatisfiable requests trains people to approve blindly.
 - **Approving is never reachable from the tailnet.** Admin endpoints live on
   the Unix socket only. `TestAdminSurfaceIsNotOnTheTailnetHandler` guards this.
+- **The daemon never holds a policy-writing credential.** The tailnet policy is
+  what grants mint its authority, so a daemon able to rewrite it could grant
+  itself anything the tailnet can express. `mint serve` refuses to start with a
+  Tailscale API credential in its environment, and `mint policy apply` reads a
+  different secret file from the read commands. Express this as capability, not
+  as a rule someone has to remember.
+- **No flag ever takes a secret as its value.** Secrets come from files or
+  stdin. An argument is readable from `/proc/<pid>/cmdline` by anything running
+  as the same user, which is how a carefully delivered credential leaks on
+  arrival.
 - **Never log or return a token except to the client that earned it.** Log the
   identity, the scope, and the expiry — not the secret.
 - **Log automatic grants as carefully as approved ones.** The approved ones you
@@ -51,6 +64,9 @@ pointing back at the retired predecessor gets the arrow backwards.
   existing approvals.
 - **Standard library plus `tailscale.com`.** No other dependencies without a
   concrete reason.
+- **Compatibility with the old name lives in `compat.go` and nowhere else.**
+  mint was `tsapp` until 2026-08. Each hook there records what has to be true
+  before it can be deleted; do not scatter new ones through the code.
 - **Run `just check` before finishing** — gofmt, vet, and tests.
 - **Commit as the human, never as the agent.** Every commit is attributed to
   the repository owner via the local Git identity. Do not override the author,

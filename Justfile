@@ -164,3 +164,35 @@ wormhole-list *args: build
 [group('client')]
 wormhole-discard *args: build
     @"{{ binary }}" wormhole discard "$@"
+
+# --- Tailnet policy ---
+# These are operator commands, not daemon ones. `apply` reads a different
+# credential from the rest by default, so the routine recipes hold one that
+# cannot write the policy. See skills/mint-policy/SKILL.md.
+
+# Print the tailnet's current policy file.
+[group('policy')]
+policy-fetch *args: build
+    @"{{ binary }}" policy fetch "$@"
+
+# Show what applying a policy file would change.
+[group('policy')]
+policy-diff *args: build
+    @"{{ binary }}" policy diff "$@"
+
+# Ask Tailscale whether a policy file would be accepted.
+[group('policy')]
+policy-validate *args: build
+    @"{{ binary }}" policy validate "$@"
+
+# Replace the tailnet policy file. Needs the write credential and --yes.
+[group('policy')]
+policy-apply *args: build
+    @"{{ binary }}" policy apply "$@"
+
+# --- Migration ---
+
+# Rename tsapp-era state directories on this host to their mint names.
+[group('migrate')]
+migrate-state *args: build
+    @"{{ binary }}" migrate-state "$@"
