@@ -1,0 +1,64 @@
+# Format, vet and test on every push and pull request.
+#
+# These are the same three checks as `just check`; keep them in step. Running
+# go directly rather than installing just keeps CI free of a toolchain the
+# project does not otherwise need.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            echo "Needs gofmt:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      # The race detector matters here: the daemon serves the tailnet and the
+      # admin socket concurrently, and the approval store is shared between
+      # them.
+      - name: test
+        run: go test -race -cover ./...
+
+  build:
+    # Cross-compilation is where a change breaks for platforms nobody develops
+    # on. Catching it here is cheaper than catching it at release time.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build every release target
+        run: |
+          set -euo pipefail
+          for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
+            CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}" \
+              go build -trimpath -o /dev/null .
+            echo "built $target"
+          done
