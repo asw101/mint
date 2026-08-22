@@ -15,8 +15,8 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
 
-	"github.com/asw101/tsapp/internal/policy"
-	"github.com/asw101/tsapp/internal/wormhole"
+	"github.com/asw101/mint/internal/policy"
+	"github.com/asw101/mint/internal/wormhole"
 )
 
 func wormholeGrantPut(tags ...string) policy.Grant {

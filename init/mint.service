@@ -1,33 +1,33 @@
 [Unit]
-Description=tsapp — mints scoped GitHub App tokens for tailnet clients
-Documentation=https://github.com/asw101/_cloud_native_ai/tree/main/tsapp
+Description=mint — mints scoped GitHub App tokens for tailnet clients
+Documentation=https://github.com/asw101/mint
 # The daemon joins the tailnet on start, so it wants routable networking first.
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=exec
-ExecStart=/usr/local/bin/tsapp serve \
+ExecStart=/usr/local/bin/mint serve \
     --hostname=%p \
     --state-dir=%S/%p \
     --key=%d/app.pem
 
 # The App ID is not a secret; the key is. Put GH_APP_ID (and any other
 # non-secret settings) here.
-EnvironmentFile=/etc/tsapp/env
+EnvironmentFile=/etc/mint/env
 
 # systemd mounts the key into a per-service tmpfs readable only by this unit,
 # so it is never readable by the service user at rest and never lands in the
 # state directory. Keep the source file root-owned and 0600.
-LoadCredential=app.pem:/etc/tsapp/app.pem
+LoadCredential=app.pem:/etc/mint/app.pem
 
-# /var/lib/tsapp, created 0700 and owned by the service user. Holds the tsnet
+# /var/lib/mint, created 0700 and owned by the service user. Holds the tsnet
 # node key and approvals.json, both of which must survive a restart.
 StateDirectory=%p
 StateDirectoryMode=0700
 
-User=tsapp
-Group=tsapp
+User=mint
+Group=mint
 DynamicUser=no
 
 Restart=on-failure

@@ -1,4 +1,4 @@
-module github.com/asw101/tsapp
+module github.com/asw101/mint
 
 go 1.26.5
 

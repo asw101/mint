@@ -304,7 +304,7 @@ func TestDescribePrefersTagsOverTheTaggedDevicesUser(t *testing.T) {
 	// A tagged node reports its user as "tagged-devices", which is useless in a
 	// grant. The tags are what src must match, so they win.
 	id := Identity{
-		NodeName: "tsapp-client.example.ts.net.",
+		NodeName: "mint-client.example.ts.net.",
 		User:     "tagged-devices",
 		Tags:     []string{"tag:agent"},
 	}

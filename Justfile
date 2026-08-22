@@ -1,13 +1,13 @@
-# Build and run tsapp.
+# Build and run mint.
 
 set positional-arguments := true
 
 root := justfile_directory()
-binary := root / "bin" / "tsapp"
+binary := root / "bin" / "mint"
 
-# Stamped into the binary so `tsapp version` can name the release it came from.
+# Stamped into the binary so `mint version` can name the release it came from.
 # Empty outside a checkout, where the toolchain's VCS stamping takes over.
-version := `git describe --tags --match 'tsapp/v*' --dirty 2>/dev/null || echo ""`
+version := `git describe --tags --match 'v*' --dirty 2>/dev/null || echo ""`
 ldflags := "-s -w -X main.version=" + version
 
 # List available recipes.
@@ -31,10 +31,10 @@ dist:
         os="${target%/*}"; arch="${target#*/}"
         CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
             -ldflags="{{ ldflags }}" \
-            -o "{{ root }}/dist/tsapp_${os}_${arch}" .
+            -o "{{ root }}/dist/mint_${os}_${arch}" .
         echo "built ${os}/${arch}"
     done
-    cd "{{ root }}/dist" && sha256sum tsapp_* > SHA256SUMS
+    cd "{{ root }}/dist" && sha256sum mint_* > SHA256SUMS
     ls -l "{{ root }}/dist"
 
 # Install into GOBIN (or GOPATH/bin).

@@ -16,16 +16,16 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/views"
 
-	"github.com/asw101/tsapp/internal/server"
-	"github.com/asw101/tsapp/internal/wormhole"
+	"github.com/asw101/mint/internal/server"
+	"github.com/asw101/mint/internal/wormhole"
 )
 
 func TestWormholeUsageListsTheExactCLI(t *testing.T) {
 	for _, line := range []string{
-		"tsapp wormhole put --to NODE --key KEY [--ttl 10m] [--replace]",
-		"tsapp wormhole get --key KEY [--from NODE]",
-		"tsapp wormhole discard --key KEY [--from NODE]",
-		"tsapp wormhole list [--json]",
+		"mint wormhole put --to NODE --key KEY [--ttl 10m] [--replace]",
+		"mint wormhole get --key KEY [--from NODE]",
+		"mint wormhole discard --key KEY [--from NODE]",
+		"mint wormhole list [--json]",
 	} {
 		if !strings.Contains(usage, line) || !strings.Contains(wormholeUsage, line) {
 			t.Errorf("usage is missing %q", line)
@@ -95,7 +95,7 @@ func TestReadWormholeValuePreservesRawBytesAndBoundsInput(t *testing.T) {
 func TestWormholeRequestNeverRetriesTransportErrors(t *testing.T) {
 	transport := &flakyTransport{remaining: 10}
 	client := &http.Client{Transport: transport}
-	_, err := doWormholeRequest(context.Background(), client, "http://tsapp", "/v1/wormhole/get", []byte(`{}`))
+	_, err := doWormholeRequest(context.Background(), client, "http://mint", "/v1/wormhole/get", []byte(`{}`))
 	if err == nil {
 		t.Fatal("want a transport error")
 	}

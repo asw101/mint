@@ -17,15 +17,15 @@ import (
 
 	"tailscale.com/ipn/ipnstate"
 
-	"github.com/asw101/tsapp/internal/server"
-	"github.com/asw101/tsapp/internal/wormhole"
+	"github.com/asw101/mint/internal/server"
+	"github.com/asw101/mint/internal/wormhole"
 )
 
 const wormholeUsage = `Usage:
-  tsapp wormhole put --to NODE --key KEY [--ttl 10m] [--replace]
-  tsapp wormhole get --key KEY [--from NODE]
-  tsapp wormhole discard --key KEY [--from NODE]
-  tsapp wormhole list [--json]
+  mint wormhole put --to NODE --key KEY [--ttl 10m] [--replace]
+  mint wormhole get --key KEY [--from NODE]
+  mint wormhole discard --key KEY [--from NODE]
+  mint wormhole list [--json]
 `
 
 func cmdWormhole(args []string) error {
@@ -59,7 +59,7 @@ func cmdWormholePut(args []string) error {
 		return err
 	}
 	if fs.NArg() != 0 || *to == "" || *key == "" {
-		return errors.New("usage: tsapp wormhole put --to NODE --key KEY [--ttl 10m] [--replace]")
+		return errors.New("usage: mint wormhole put --to NODE --key KEY [--ttl 10m] [--replace]")
 	}
 	if err := wormhole.ValidateKey(*key); err != nil {
 		return err
@@ -115,10 +115,10 @@ func cmdWormholePut(args []string) error {
 
 func reportWormholePut(w io.Writer, result server.WormholePutResponse) {
 	if result.Replaced {
-		fmt.Fprintln(w, "tsapp: replaced an unconsumed wormhole item; the recipient may be unavailable or the handoff may be stalled")
+		fmt.Fprintln(w, "mint: replaced an unconsumed wormhole item; the recipient may be unavailable or the handoff may be stalled")
 		return
 	}
-	fmt.Fprintf(w, "tsapp: stored wormhole item %s for %s until %s\n",
+	fmt.Fprintf(w, "mint: stored wormhole item %s for %s until %s\n",
 		result.ID, result.RecipientNodeName, result.ExpiresAt.Format(time.RFC3339))
 }
 
@@ -132,7 +132,7 @@ func cmdWormholeGet(args []string) error {
 		return err
 	}
 	if fs.NArg() != 0 || *key == "" {
-		return errors.New("usage: tsapp wormhole get --key KEY [--from NODE]")
+		return errors.New("usage: mint wormhole get --key KEY [--from NODE]")
 	}
 	if err := wormhole.ValidateKey(*key); err != nil {
 		return err
@@ -185,7 +185,7 @@ func cmdWormholeDiscard(args []string) error {
 		return err
 	}
 	if fs.NArg() != 0 || *key == "" {
-		return errors.New("usage: tsapp wormhole discard --key KEY [--from NODE]")
+		return errors.New("usage: mint wormhole discard --key KEY [--from NODE]")
 	}
 	if err := wormhole.ValidateKey(*key); err != nil {
 		return err
@@ -215,7 +215,7 @@ func cmdWormholeDiscard(args []string) error {
 	if resp.StatusCode != http.StatusOK {
 		return wormholeHTTPError(resp)
 	}
-	fmt.Fprintln(os.Stderr, "tsapp: discarded wormhole item")
+	fmt.Fprintln(os.Stderr, "mint: discarded wormhole item")
 	return nil
 }
 
@@ -228,7 +228,7 @@ func cmdWormholeList(args []string) error {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return errors.New("usage: tsapp wormhole list [--json]")
+		return errors.New("usage: mint wormhole list [--json]")
 	}
 
 	ctx, stop := signalContext()

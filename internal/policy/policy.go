@@ -25,7 +25,22 @@ const AllRepos = "*"
 // CapabilityName is the tailnet ACL capability this service reads. It lives
 // here rather than in the server package so denial messages can name it.
 // Custom capabilities must be <domain>/<path>/<name>.
-const CapabilityName = "asw101.dev/cap/tsapp"
+const CapabilityName = "asw101.dev/cap/mint"
+
+// LegacyCapabilityName is the name this capability had while the project was
+// called tsapp. The daemon honours both, because a tailnet's policy file and
+// the binaries reading it cannot be updated in the same instant: whichever
+// order the operator picks, one side is briefly behind, and a daemon that
+// accepted only the new name would lock out every client until the policy
+// caught up.
+//
+// Grants under both names are merged rather than one shadowing the other, so
+// the transitional state is strictly additive and the rename can also be
+// rolled back without a second window of denial.
+//
+// Remove this, and its use in the server, once no tailnet mint serves grants
+// the old name. Nothing else depends on it.
+const LegacyCapabilityName = "asw101.dev/cap/tsapp"
 
 // permissionRank orders GitHub's permission levels so a request for "read"
 // can be satisfied by a grant of "write".

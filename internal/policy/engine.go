@@ -144,7 +144,7 @@ func (e *Engine) Evaluate(id Identity, scope Scope) (Decision, error) {
 		return Decision{
 			Outcome: Denied,
 			Reason: fmt.Sprintf(
-				"the tailnet policy grants no tsapp capability to %s; add a grant whose src matches it, "+
+				"the tailnet policy grants no mint capability to %s; add a grant whose src matches it, "+
 					"with an app capability named %q (app capabilities require the grants syntax, not the legacy acls array)",
 				id.Describe(), CapabilityName),
 		}, nil

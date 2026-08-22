@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/asw101/tsapp/internal/policy"
-	"github.com/asw101/tsapp/internal/wormhole"
+	"github.com/asw101/mint/internal/policy"
+	"github.com/asw101/mint/internal/wormhole"
 )
 
 const (

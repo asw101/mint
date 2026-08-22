@@ -15,9 +15,9 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
 
-	"github.com/asw101/tsapp/internal/app"
-	"github.com/asw101/tsapp/internal/policy"
-	"github.com/asw101/tsapp/internal/wormhole"
+	"github.com/asw101/mint/internal/app"
+	"github.com/asw101/mint/internal/policy"
+	"github.com/asw101/mint/internal/wormhole"
 )
 
 var testTime = time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
@@ -549,4 +549,60 @@ func TestAdminStatusVerbsAreSpelledCorrectly(t *testing.T) {
 	if status.Status != "denied" {
 		t.Errorf("deny returned %q, want \"denied\"", status.Status)
 	}
+}
+
+// capRename covers the transitional window in which the tailnet policy and the
+// binaries reading it disagree about the capability's name. Both spellings have
+// to work, and grants under them have to add up rather than one shadowing the
+// other, or renaming the capability locks clients out for as long as the two
+// sides are out of step.
+func TestCapabilityRename(t *testing.T) {
+	encode := func(t *testing.T, grants ...policy.Grant) []tailcfg.RawMessage {
+		t.Helper()
+		var raw []tailcfg.RawMessage
+		for _, g := range grants {
+			encoded, err := json.Marshal(g)
+			if err != nil {
+				t.Fatalf("marshal grant: %v", err)
+			}
+			raw = append(raw, tailcfg.RawMessage(encoded))
+		}
+		return raw
+	}
+	base := func(t *testing.T, caps tailcfg.PeerCapMap) *apitype.WhoIsResponse {
+		who := whoIs(t, "node-1")
+		who.CapMap = caps
+		return who
+	}
+
+	t.Run("legacy name alone still authorizes", func(t *testing.T) {
+		who := base(t, tailcfg.PeerCapMap{
+			LegacyCapName: encode(t, policy.Grant{Repos: []string{"one"}}),
+		})
+		s := newTestServer(t, who, &fakeMinter{})
+
+		rec := postToken(t, s, TokenRequest{Repos: []string{"one"}})
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("got %d, want 202 pending under the old capability name: %s", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("both names merge", func(t *testing.T) {
+		who := base(t, tailcfg.PeerCapMap{
+			CapName:       encode(t, policy.Grant{Repos: []string{"one"}}),
+			LegacyCapName: encode(t, policy.Grant{Repos: []string{"two"}}),
+		})
+		s := newTestServer(t, who, &fakeMinter{})
+
+		for _, repo := range []string{"one", "two"} {
+			rec := postToken(t, s, TokenRequest{Repos: []string{repo}})
+			if rec.Code != http.StatusAccepted {
+				t.Errorf("repo %q: got %d, want 202 pending: %s", repo, rec.Code, rec.Body)
+			}
+		}
+		rec := postToken(t, s, TokenRequest{Repos: []string{"three"}})
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("got %d, want 403 for a repo neither name grants: %s", rec.Code, rec.Body)
+		}
+	})
 }

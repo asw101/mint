@@ -18,14 +18,19 @@ import (
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
 
-	"github.com/asw101/tsapp/internal/app"
-	"github.com/asw101/tsapp/internal/policy"
-	"github.com/asw101/tsapp/internal/wormhole"
+	"github.com/asw101/mint/internal/app"
+	"github.com/asw101/mint/internal/policy"
+	"github.com/asw101/mint/internal/wormhole"
 )
 
 // CapName is the tailnet ACL capability this service reads, typed for the
 // tailscale API. The string lives in the policy package so denials can name it.
 const CapName tailcfg.PeerCapability = policy.CapabilityName
+
+// LegacyCapName is the tsapp-era spelling of the same capability, also read so
+// a rename of the tailnet policy cannot lock clients out mid-flight. See
+// policy.LegacyCapabilityName for why, and for when it can go.
+const LegacyCapName tailcfg.PeerCapability = policy.LegacyCapabilityName
 
 // Identifier reports who a tailnet peer is. *local.Client satisfies it; tests
 // supply a fake so the authorization logic needs no tailnet.
@@ -235,6 +240,11 @@ func (s *Server) identify(r *http.Request) (policy.Identity, error) {
 	if err != nil {
 		return policy.Identity{}, fmt.Errorf("parse capability %s: %w", CapName, err)
 	}
+	legacy, err := tailcfg.UnmarshalCapJSON[policy.Grant](who.CapMap, LegacyCapName)
+	if err != nil {
+		return policy.Identity{}, fmt.Errorf("parse capability %s: %w", LegacyCapName, err)
+	}
+	grants = append(grants, legacy...)
 
 	identity := policy.Identity{
 		NodeID:   string(who.Node.StableID),

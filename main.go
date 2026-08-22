@@ -1,4 +1,4 @@
-// Command tsapp mints short-lived GitHub App tokens for tailnet clients,
+// Command mint mints short-lived GitHub App tokens for tailnet clients,
 // automatically when a human has already approved the scope and on request
 // when they have not.
 package main
@@ -26,41 +26,42 @@ import (
 
 	"tailscale.com/tsnet"
 
-	"github.com/asw101/tsapp/internal/app"
-	"github.com/asw101/tsapp/internal/policy"
-	"github.com/asw101/tsapp/internal/server"
-	"github.com/asw101/tsapp/internal/wormhole"
+	"github.com/asw101/mint/internal/app"
+	"github.com/asw101/mint/internal/policy"
+	"github.com/asw101/mint/internal/server"
+	"github.com/asw101/mint/internal/wormhole"
 )
 
-const usage = `tsapp mints GitHub App tokens for tailnet clients.
+const usage = `mint mints GitHub App tokens for tailnet clients.
 
 Usage:
-  tsapp serve [flags]              run the daemon
-  tsapp token [flags]              ask the daemon for a token
-  tsapp whoami [flags]             show what the daemon sees you as
-  tsapp drop [flags]               give up everything this node holds
-  tsapp wormhole put --to NODE --key KEY [--ttl 10m] [--replace]
-  tsapp wormhole get --key KEY [--from NODE]
-  tsapp wormhole discard --key KEY [--from NODE]
-  tsapp wormhole list [--json]
+  mint serve [flags]              run the daemon
+  mint token [flags]              ask the daemon for a token
+  mint whoami [flags]             show what the daemon sees you as
+  mint drop [flags]               give up everything this node holds
+  mint wormhole put --to NODE --key KEY [--ttl 10m] [--replace]
+  mint wormhole get --key KEY [--from NODE]
+  mint wormhole discard --key KEY [--from NODE]
+  mint wormhole list [--json]
 
-  tsapp version                    print the version and how it was built
+  mint version                    print the version and how it was built
 
-  tsapp pending                    list requests awaiting approval
-  tsapp approvals                  list current approvals
-  tsapp approve <id> [--ttl 30d]   approve a pending request
-  tsapp deny <id>                  drop a pending request
-  tsapp revoke <id>                revoke an approval
-  tsapp reset --yes                delete all local state
-  tsapp reset daemon --yes         narrow it to the daemon identity and approvals
-  tsapp reset client --yes         narrow it to the client identity
+  mint pending                    list requests awaiting approval
+  mint approvals                  list current approvals
+  mint approve <id> [--ttl 30d]   approve a pending request
+  mint deny <id>                  drop a pending request
+  mint revoke <id>                revoke an approval
+  mint reset --yes                delete all local state
+  mint reset daemon --yes         narrow it to the daemon identity and approvals
+  mint reset client --yes         narrow it to the client identity
+  mint migrate-state [target]     rename tsapp-era state to its mint name
 
 serve flags:
-  --hostname NAME     tailnet name to claim         (default tsapp)
-  --state-dir PATH    tsnet state and approvals     (default OS config dir/tsapp)
+  --hostname NAME     tailnet name to claim         (default mint)
+  --state-dir PATH    tsnet state and approvals     (default OS config dir/mint)
   --socket PATH       admin socket                  (default <state-dir>/admin.sock)
   --socket-group G    group that may use the admin socket, name or gid
-                      (env TSAPP_SOCKET_GROUP). Widens it from 0600 to 0660,
+                      (env MINT_SOCKET_GROUP). Widens it from 0600 to 0660,
                       so members approve without root. The socket has no other
                       authentication — grant it as you would sudo
   --port N            tailnet listen port           (default 8080)
@@ -73,13 +74,13 @@ serve flags:
   --api URL           GitHub API base URL           (env GITHUB_API_URL)
 
 token flags:
-  --server URL        daemon address                (default http://tsapp:8080)
+  --server URL        daemon address                (default http://mint:8080)
   --repo NAME         repository, repeatable and comma-separated. Required;
                       pass --repo '*' to ask for every repository the
                       installation can reach, which still needs approval
   --permission k=v    narrow a permission, repeatable
-  --hostname NAME     tailnet name for this client  (default tsapp-client)
-  --state-dir PATH    tsnet state for this client   (default OS config dir/tsapp-client)
+  --hostname NAME     tailnet name for this client  (default mint-client)
+  --state-dir PATH    tsnet state for this client   (default OS config dir/mint-client)
   --json              print the full response
 
 whoami and wormhole take the client flags that do not describe a scope —
@@ -93,7 +94,7 @@ other nodes remain. The node it drops is always the caller, so one client cannot
 drop another's access.
 
 Clients join the tailnet on first run and print a login URL. Approve the node
-in the Tailscale console, give it a tag, and grant it the tsapp capability;
+in the Tailscale console, give it a tag, and grant it the mint capability;
 after that it asks for scopes and this daemon decides.
 
 Admin commands talk to the daemon over its Unix socket, so they work only from
@@ -104,7 +105,14 @@ Reset permanently deletes local tsnet identities and, for the daemon, every
 approval. It does not remove the corresponding nodes from the Tailscale admin
 console.
 
-Exit codes from 'tsapp token' and 'tsapp wormhole', so a script need not read
+mint was called tsapp until 2026-08 and still answers to it while the rename is
+in flight: it reads an existing tsapp state directory, accepts TSAPP_ variables,
+honours the old capability name alongside the new one, and falls back to a
+daemon named tsapp when no mint node is on the tailnet. Migrate-state ends that
+on a host by moving the directories, keeping the node identity and the
+approvals. See compat.go for the whole of it, and for when each part can go.
+
+Exit codes from 'mint token' and 'mint wormhole', so a script need not read
 the message:
   0  a token, on stdout
   2  pending approval — unused by wormhole v1
@@ -121,7 +129,7 @@ const (
 	exitDenied  = 3 // refused by policy; retrying will not help
 )
 
-// exitCodeError carries the status `tsapp` should exit with.
+// exitCodeError carries the status `mint` should exit with.
 type exitCodeError struct {
 	code int
 	err  error
@@ -138,7 +146,7 @@ func main() {
 		if errors.As(err, &coded) {
 			code = coded.code
 		}
-		fmt.Fprintln(os.Stderr, "tsapp: "+err.Error())
+		fmt.Fprintln(os.Stderr, "mint: "+err.Error())
 		os.Exit(code)
 	}
 }
@@ -171,6 +179,8 @@ func run(args []string) error {
 		return cmdAdminByID(args[1:], "revoke", "/v1/revoke")
 	case "reset":
 		return cmdReset(args[1:])
+	case "migrate-state":
+		return cmdMigrateState(args[1:])
 	case "version", "--version", "-version":
 		fmt.Print(versionReport())
 		return nil
@@ -178,7 +188,7 @@ func run(args []string) error {
 		fmt.Print(usage)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q (try 'tsapp help')", args[0])
+		return fmt.Errorf("unknown command %q (try 'mint help')", args[0])
 	}
 }
 
@@ -193,7 +203,7 @@ var version = ""
 // built. A binary that cannot say which one it is invites the wrong bug report.
 func versionReport() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "tsapp %s\n", versionString())
+	fmt.Fprintf(&b, "mint %s\n", versionString())
 
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -240,10 +250,10 @@ func short(revision string) string {
 
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	hostname := fs.String("hostname", "tsapp", "tailnet name to claim")
-	stateDir := fs.String("state-dir", defaultDir("tsapp"), "tsnet state and approvals")
+	hostname := fs.String("hostname", "mint", "tailnet name to claim")
+	stateDir := fs.String("state-dir", defaultStateDir("mint"), "tsnet state and approvals")
 	socket := fs.String("socket", "", "admin socket path")
-	socketGroup := fs.String("socket-group", envOr("TSAPP_SOCKET_GROUP", ""),
+	socketGroup := fs.String("socket-group", envOrLegacy("MINT_SOCKET_GROUP", ""),
 		"group allowed to use the admin socket (name or gid); widens it to 0660")
 	port := fs.Int("port", 8080, "tailnet listen port")
 	useTLS := fs.Bool("tls", false, "serve HTTPS over the tailnet")
@@ -270,7 +280,7 @@ func cmdServe(args []string) error {
 		return err
 	}
 
-	gh := &app.Client{AppID: *appID, Signer: signer, BaseURL: *apiURL, UserAgent: "tsapp"}
+	gh := &app.Client{AppID: *appID, Signer: signer, BaseURL: *apiURL, UserAgent: "mint"}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -502,9 +512,9 @@ type clientFlags struct {
 }
 
 func (c *clientFlags) bind(fs *flag.FlagSet) {
-	fs.StringVar(&c.server, "server", envOr("TSAPP_SERVER", "http://tsapp:8080"), "daemon address")
-	fs.StringVar(&c.hostname, "hostname", envOr("TSAPP_HOSTNAME", "tsapp-client"), "tailnet name for this client")
-	fs.StringVar(&c.stateDir, "state-dir", envOr("TSAPP_STATE_DIR", defaultDir("tsapp-client")), "tsnet state")
+	fs.StringVar(&c.server, "server", envOrLegacy("MINT_SERVER", defaultServer), "daemon address")
+	fs.StringVar(&c.hostname, "hostname", envOrLegacy("MINT_HOSTNAME", "mint-client"), "tailnet name for this client")
+	fs.StringVar(&c.stateDir, "state-dir", envOrLegacy("MINT_STATE_DIR", defaultStateDir("mint-client")), "tsnet state")
 }
 
 // dial joins the tailnet, printing the login URL on first run so the node can
@@ -528,6 +538,7 @@ func (c *clientFlags) dial(ctx context.Context) (*tsnet.Server, *http.Client, er
 		srv.Close()
 		return nil, nil, fmt.Errorf("join tailnet: %w", err)
 	}
+	c.server = resolveServer(ctx, srv, c.server)
 	if status != nil && status.Self != nil {
 		c.server = expandTailnetHost(c.server, status.Self.DNSName)
 	}
@@ -627,7 +638,7 @@ func tokenError(code int, statusLine string, status server.StatusResponse) error
 	switch code {
 	case http.StatusAccepted:
 		return &exitCodeError{code: exitPending, err: fmt.Errorf(
-			"pending approval (request %s) — run 'tsapp approve %s' on the daemon host",
+			"pending approval (request %s) — run 'mint approve %s' on the daemon host",
 			status.RequestID, status.RequestID)}
 
 	case http.StatusForbidden:
@@ -777,7 +788,7 @@ func doWhileSettling(ctx context.Context, client *http.Client, newRequest func()
 			return nil, lastErr
 		}
 		if attempt == 0 {
-			fmt.Fprintln(os.Stderr, "tsapp: waiting for the tailnet to settle...")
+			fmt.Fprintln(os.Stderr, "mint: waiting for the tailnet to settle...")
 		}
 		select {
 		case <-ctx.Done():
@@ -790,7 +801,7 @@ func doWhileSettling(ctx context.Context, client *http.Client, newRequest func()
 // --- admin ---
 
 func adminSocketFlag(fs *flag.FlagSet) *string {
-	return fs.String("socket", envOr("TSAPP_SOCKET", filepath.Join(defaultDir("tsapp"), "admin.sock")),
+	return fs.String("socket", envOrLegacy("MINT_SOCKET", filepath.Join(defaultStateDir("mint"), "admin.sock")),
 		"daemon admin socket")
 }
 
@@ -828,7 +839,7 @@ func cmdApprove(args []string) error {
 		return err
 	}
 	if id == "" {
-		return errors.New("usage: tsapp approve <request-id> [--ttl 720h]")
+		return errors.New("usage: mint approve <request-id> [--ttl 720h]")
 	}
 	body, _ := json.Marshal(map[string]string{"id": id, "ttl": *ttl})
 	return adminPost(*socket, "/v1/approve", body)
@@ -867,7 +878,7 @@ func cmdAdminByID(args []string, name, path string) error {
 		return err
 	}
 	if id == "" {
-		return fmt.Errorf("usage: tsapp %s <id>", name)
+		return fmt.Errorf("usage: mint %s <id>", name)
 	}
 	body, _ := json.Marshal(map[string]string{"id": id})
 	return adminPost(*socket, path, body)
@@ -891,14 +902,14 @@ func adminPost(socket, path string, body []byte) error {
 }
 
 func adminDialError(socket string, err error) error {
-	return fmt.Errorf("reach the daemon at %s (is 'tsapp serve' running on this host?): %w", socket, err)
+	return fmt.Errorf("reach the daemon at %s (is 'mint serve' running on this host?): %w", socket, err)
 }
 
 // --- reset ---
 
 func cmdReset(args []string) error {
 	// "Clean up everything this host holds" is the case people actually want,
-	// so it is the default: a bare `tsapp reset` covers daemon and client
+	// so it is the default: a bare `mint reset` covers daemon and client
 	// alike, and a target narrows it when only one of them is in the way.
 	target := "all"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -912,16 +923,16 @@ func cmdReset(args []string) error {
 	var stateDir, daemonStateDir, clientStateDir, socket string
 	switch target {
 	case "daemon":
-		fs.StringVar(&stateDir, "state-dir", envOr("TSAPP_STATE_DIR", defaultDir("tsapp")),
+		fs.StringVar(&stateDir, "state-dir", envOrLegacy("MINT_STATE_DIR", defaultStateDir("mint")),
 			"daemon state directory")
 		fs.StringVar(&socket, "socket", "", "daemon admin socket used to check whether it is running")
 	case "client":
-		fs.StringVar(&stateDir, "state-dir", envOr("TSAPP_STATE_DIR", defaultDir("tsapp-client")),
+		fs.StringVar(&stateDir, "state-dir", envOrLegacy("MINT_STATE_DIR", defaultStateDir("mint-client")),
 			"client state directory")
 	case "all":
-		fs.StringVar(&daemonStateDir, "daemon-state-dir", defaultDir("tsapp"),
+		fs.StringVar(&daemonStateDir, "daemon-state-dir", defaultStateDir("mint"),
 			"daemon state directory")
-		fs.StringVar(&clientStateDir, "client-state-dir", defaultDir("tsapp-client"),
+		fs.StringVar(&clientStateDir, "client-state-dir", defaultStateDir("mint-client"),
 			"client state directory")
 		fs.StringVar(&socket, "socket", "", "daemon admin socket used to check whether it is running")
 	}

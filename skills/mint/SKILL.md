@@ -1,13 +1,13 @@
 ---
-name: tsapp
-description: Get a short-lived GitHub token or move an ephemeral consume-once secret through the tsapp broker on the tailnet. Use when the user says /tsapp, a task needs scoped GitHub access, or a bootstrap credential must move between named tailnet nodes without chat, clipboard, or a file.
+name: mint
+description: Get a short-lived GitHub token or move an ephemeral consume-once secret through the mint broker on the tailnet. Use when the user says /mint, a task needs scoped GitHub access, or a bootstrap credential must move between named tailnet nodes without chat, clipboard, or a file.
 user-invocable: true
 allowed-tools: Bash
 ---
 
-# /tsapp — authenticate to GitHub through the broker
+# /mint — authenticate to GitHub through the broker
 
-`tsapp` mints a GitHub App token scoped to the repositories you name, valid for
+`mint` mints a GitHub App token scoped to the repositories you name, valid for
 one hour. You present no credential: the daemon identifies you by your tailnet
 node and decides from policy.
 
@@ -17,7 +17,7 @@ you get reaches only what a human has approved for this machine.
 ## Get a token
 
 ```sh
-tsapp token --repo <name>
+mint token --repo <name>
 ```
 
 `--repo` takes a bare name or `owner/name`, is repeatable, and accepts a
@@ -26,13 +26,13 @@ comma-separated list.
 Use it without letting it reach a log or the transcript:
 
 ```sh
-GH_TOKEN=$(tsapp token --repo widget) gh pr list --repo asw101/widget
+GH_TOKEN=$(mint token --repo widget) gh pr list --repo asw101/widget
 ```
 
 For git over HTTPS:
 
 ```sh
-GH_TOKEN=$(tsapp token --repo widget) \
+GH_TOKEN=$(mint token --repo widget) \
   git -c credential.helper='!f() { echo "username=x-access-token"; echo "password=$GH_TOKEN"; }; f' \
   clone https://github.com/asw101/widget
 ```
@@ -54,7 +54,7 @@ merely read.
 Pass `--permission` when you deliberately want a weaker token:
 
 ```sh
-tsapp token --repo widget --permission contents=read    # deliberately read-only
+mint token --repo widget --permission contents=read    # deliberately read-only
 ```
 
 Defaulting to `contents=read` "to be safe" is a false economy. Approvals are
@@ -85,7 +85,7 @@ avoids having to predict which of them a commit will turn out to need.
 | `1` | transport, config, or upstream failure | report it; retry only if it looks transient |
 
 ```sh
-if token=$(tsapp token --repo widget 2>/dev/null); then
+if token=$(mint token --repo widget 2>/dev/null); then
     GH_TOKEN="$token" gh ...
 else
     case $? in
@@ -100,10 +100,10 @@ On exit `2` the message names the request id. Surface it verbatim so the user
 can act:
 
 ```
-tsapp: pending approval (request 14bf7231) — run 'tsapp approve 14bf7231' on the daemon host
+mint: pending approval (request 14bf7231) — run 'mint approve 14bf7231' on the daemon host
 ```
 
-Then wait for them. **Approval is a human decision, and `tsapp approve` only
+Then wait for them. **Approval is a human decision, and `mint approve` only
 works on the daemon's host** — if you are not on it, you cannot approve, and
 you should not try.
 
@@ -124,7 +124,7 @@ do not ask the user to approve something they have already approved.
   more repositories than the task needs is how a narrow approval becomes a
   broad one. Asking up front for the permission the work genuinely needs is
   not widening — that is just being honest about the task.
-- **Do not fall back to another credential** when `tsapp` refuses. A refusal is
+- **Do not fall back to another credential** when `mint` refuses. A refusal is
   the answer, not an obstacle.
 
 ## Move an ephemeral secret
@@ -133,13 +133,13 @@ Pipe the producer directly into a short-lived, explicitly addressed item:
 
 ```sh
 producer |
-  tsapp wormhole put --to <recipient-node> --key <purpose/key> --ttl 10m
+  mint wormhole put --to <recipient-node> --key <purpose/key> --ttl 10m
 ```
 
 Consume it directly into a stdin-aware program:
 
 ```sh
-tsapp wormhole get --key <purpose/key> |
+mint wormhole get --key <purpose/key> |
   consumer
 ```
 
@@ -148,7 +148,7 @@ case where exactly one sender has used the key, and pass it when you need
 certainty about who sent the item:
 
 ```sh
-tsapp wormhole get --key <purpose/key> --from <sender-node> |
+mint wormhole get --key <purpose/key> --from <sender-node> |
   consumer
 ```
 
@@ -159,8 +159,8 @@ fetch fail without consuming anything. Always use a short explicit TTL.
 Discover what is addressed to this node without exposing any values:
 
 ```sh
-tsapp wormhole list
-tsapp wormhole list --json
+mint wormhole list
+mint wormhole list --json
 ```
 
 `list` shows metadata only — sender, key, creation and expiry times, and size —
@@ -171,7 +171,7 @@ Use explicit replacement only when the source credential was regenerated:
 
 ```sh
 producer |
-  tsapp wormhole put --to <recipient-node> --key <purpose/key> --ttl 10m --replace
+  mint wormhole put --to <recipient-node> --key <purpose/key> --ttl 10m --replace
 ```
 
 A replacement warning means the previous secret was never consumed. Surface
@@ -181,7 +181,7 @@ Never add `--replace` merely to make a `409` retry succeed.
 When the task is cancelled, discard without revealing:
 
 ```sh
-tsapp wormhole discard --key <purpose/key> [--from <sender-node>]
+mint wormhole discard --key <purpose/key> [--from <sender-node>]
 ```
 
 ### Wormhole rules
@@ -219,7 +219,7 @@ tsapp wormhole discard --key <purpose/key> [--from <sender-node>]
 ## Diagnosing
 
 ```sh
-tsapp whoami
+mint whoami
 ```
 
 Reports what the daemon sees: node, tags, and the grants policy gives you. If
@@ -227,11 +227,11 @@ Reports what the daemon sees: node, tags, and the grants policy gives you. If
 policy problem for the user to fix, not something to work around.
 
 ```sh
-tsapp version                       # which build this is
-tsapp token --server http://<host>:8080 --repo <name>
+mint version                       # which build this is
+mint token --server http://<host>:8080 --repo <name>
 ```
 
-`--server` defaults to `http://tsapp:8080`; pass it when the daemon runs under
+`--server` defaults to `http://mint:8080`; pass it when the daemon runs under
 another hostname.
 
 ## Installing this skill
@@ -240,11 +240,11 @@ The skill lives with the project so it ships with it. Symlink it into the
 agent skills tree rather than copying, so it tracks the project:
 
 ```sh
-ln -s ../../tsapp/skills/tsapp .agents/skills/tsapp
+ln -s ../../mint/skills/mint .agents/skills/mint
 ```
 
-Adjust the relative path to wherever `tsapp/` sits. Verify it resolves:
+Adjust the relative path to wherever `mint/` sits. Verify it resolves:
 
 ```sh
-readlink -f .agents/skills/tsapp && cat .agents/skills/tsapp/SKILL.md | head -3
+readlink -f .agents/skills/mint && cat .agents/skills/mint/SKILL.md | head -3
 ```

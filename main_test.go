@@ -24,14 +24,14 @@ import (
 
 	"errors"
 
-	"github.com/asw101/tsapp/internal/app"
-	"github.com/asw101/tsapp/internal/policy"
-	"github.com/asw101/tsapp/internal/server"
+	"github.com/asw101/mint/internal/app"
+	"github.com/asw101/mint/internal/policy"
+	"github.com/asw101/mint/internal/server"
 )
 
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "tsapp-")
+	dir, err := os.MkdirTemp("/tmp", "mint-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestAdminExplainsWhenDaemonIsAbsent(t *testing.T) {
 	}
 	// The failure a user hits most often is "the daemon isn't running", so it
 	// must say so rather than surfacing a bare dial error.
-	if !strings.Contains(err.Error(), "is 'tsapp serve' running") {
+	if !strings.Contains(err.Error(), "is 'mint serve' running") {
 		t.Errorf("got %q, want a hint about the daemon", err)
 	}
 }
@@ -282,12 +282,12 @@ func TestServeRequiresAppCredentials(t *testing.T) {
 }
 
 func TestDropIsDocumentedAsAClientCommand(t *testing.T) {
-	if !strings.Contains(usage, "tsapp drop [flags]") {
+	if !strings.Contains(usage, "mint drop [flags]") {
 		t.Error("want drop in the usage text")
 	}
 	// Drop belongs beside the commands a tailnet client can run, not beside
 	// the admin ones that only reach the daemon over its socket.
-	if strings.Index(usage, "tsapp drop") > strings.Index(usage, "tsapp pending") {
+	if strings.Index(usage, "mint drop") > strings.Index(usage, "mint pending") {
 		t.Error("want drop listed with the client commands, above the admin group")
 	}
 }
@@ -334,7 +334,7 @@ func TestDescribeDrop(t *testing.T) {
 }
 
 func TestDefaultDirIsNamespaced(t *testing.T) {
-	if got := defaultDir("tsapp"); !strings.HasSuffix(got, "tsapp") {
+	if got := defaultDir("mint"); !strings.HasSuffix(got, "mint") {
 		t.Errorf("got %q, want it to end in the app name", got)
 	}
 }
@@ -420,7 +420,7 @@ func TestResetWithoutATargetClearsEverything(t *testing.T) {
 	}
 }
 
-// Without --yes it must still refuse, and name both paths: a bare `tsapp reset`
+// Without --yes it must still refuse, and name both paths: a bare `mint reset`
 // is the dry run people will lean on before committing to it.
 func TestResetWithoutATargetStillNeedsConfirmation(t *testing.T) {
 	root := t.TempDir()
@@ -582,7 +582,7 @@ func TestResolveInstallationExplainsWhenAppIsUninstalled(t *testing.T) {
 }
 
 func TestExpandTailnetHost(t *testing.T) {
-	const self = "tsapp-client.tail1234.ts.net."
+	const self = "mint-client.tail1234.ts.net."
 
 	tests := []struct {
 		name   string
@@ -593,18 +593,18 @@ func TestExpandTailnetHost(t *testing.T) {
 			// MagicDNS does not resolve bare short names, which is what the
 			// default --server used to be.
 			name:   "bare name gains the tailnet suffix",
-			server: "http://tsapp:8080",
-			want:   "http://tsapp.tail1234.ts.net:8080",
+			server: "http://mint:8080",
+			want:   "http://mint.tail1234.ts.net:8080",
 		},
 		{
 			name:   "bare name without a port",
-			server: "https://tsapp",
-			want:   "https://tsapp.tail1234.ts.net",
+			server: "https://mint",
+			want:   "https://mint.tail1234.ts.net",
 		},
 		{
 			name:   "already qualified is untouched",
-			server: "http://tsapp.tail1234.ts.net:8080",
-			want:   "http://tsapp.tail1234.ts.net:8080",
+			server: "http://mint.tail1234.ts.net:8080",
+			want:   "http://mint.tail1234.ts.net:8080",
 		},
 		{
 			name:   "ip address is untouched",
@@ -613,8 +613,8 @@ func TestExpandTailnetHost(t *testing.T) {
 		},
 		{
 			name:   "path is preserved",
-			server: "http://tsapp:8080/base",
-			want:   "http://tsapp.tail1234.ts.net:8080/base",
+			server: "http://mint:8080/base",
+			want:   "http://mint.tail1234.ts.net:8080/base",
 		},
 	}
 
@@ -630,7 +630,7 @@ func TestExpandTailnetHost(t *testing.T) {
 func TestExpandTailnetHostLeavesThingsAloneWhenItCannotHelp(t *testing.T) {
 	// A single-label self name yields no suffix; better to leave the address
 	// alone than to build a nonsense one.
-	if got := expandTailnetHost("http://tsapp:8080", "solo."); got != "http://tsapp:8080" {
+	if got := expandTailnetHost("http://mint:8080", "solo."); got != "http://mint:8080" {
 		t.Errorf("got %q, want the address unchanged", got)
 	}
 	if got := expandTailnetHost("://bad", "a.b.ts.net."); got != "://bad" {
@@ -717,7 +717,7 @@ func TestDoWhileSettlingHonoursContextCancellation(t *testing.T) {
 
 func TestVersionReportNamesTheBinary(t *testing.T) {
 	got := versionReport()
-	if !strings.HasPrefix(got, "tsapp ") {
+	if !strings.HasPrefix(got, "mint ") {
 		t.Errorf("got %q, want it to start with the program name", got)
 	}
 	// Built by `go test` from a checkout, so the toolchain stamps VCS info
@@ -731,14 +731,14 @@ func TestVersionStringPrefersTheStampedValue(t *testing.T) {
 	original := version
 	t.Cleanup(func() { version = original })
 
-	version = "tsapp/v9.9.9"
-	if got := versionString(); got != "tsapp/v9.9.9" {
+	version = "mint/v9.9.9"
+	if got := versionString(); got != "mint/v9.9.9" {
 		t.Errorf("got %q, want the stamped value", got)
 	}
 
 	// Unstamped falls back to build info rather than claiming a version.
 	version = ""
-	if got := versionString(); got == "tsapp/v9.9.9" {
+	if got := versionString(); got == "mint/v9.9.9" {
 		t.Error("stale stamped value leaked through")
 	}
 }

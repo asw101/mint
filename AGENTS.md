@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI coding agents working in `tsapp`.
+Guidance for AI coding agents working in `mint`.
 
 ## What this is
 
@@ -19,8 +19,14 @@ implements.
 | `internal/server/server.go` | The tailnet and admin HTTP surfaces. |
 | `internal/app/` | GitHub App JWT signing and token minting. |
 
-`internal/app` is a **vendored copy**, not an import. Keep it that way: do not
-add a module dependency to share it with anything else.
+`internal/app` is **mint's own code**. It began as a copy of the same package in
+`asw101/ghapp`, mint's predecessor, and mint is now the surviving consumer:
+ghapp is deprecated, and Go could not have shared the package across module
+boundaries under `internal/` in any case. Edit it here.
+
+If something else ever needs it, mint promotes the package out of `internal/`
+and the other repository depends on mint. Never the reverse: a dependency
+pointing back at the retired predecessor gets the arrow backwards.
 
 ## Conventions
 

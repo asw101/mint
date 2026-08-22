@@ -187,3 +187,43 @@ func TestBaseURLTrimsTrailingSlash(t *testing.T) {
 		t.Errorf("got %q, want %q", got, DefaultBaseURL)
 	}
 }
+
+// Installation is the one method this package has that its ancestor in
+// asw101/ghapp does not, and mint owns it now. It is what lets a daemon
+// configured with an explicit installation ID still report which account it
+// mints for, so it is worth a test of its own.
+func TestInstallationFetchesByID(t *testing.T) {
+	var gotPath, gotAuth string
+
+	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"id":89012345,"account":{"login":"asw101"}}`)
+	}))
+
+	installation, err := client.Installation(context.Background(), 89012345)
+	if err != nil {
+		t.Fatalf("Installation: %v", err)
+	}
+
+	if want := "/app/installations/89012345"; gotPath != want {
+		t.Errorf("got path %q, want %q", gotPath, want)
+	}
+	if !strings.HasPrefix(gotAuth, "Bearer ") || strings.Count(gotAuth, ".") != 2 {
+		t.Errorf("got Authorization %q, want a Bearer JWT", gotAuth)
+	}
+	if installation.ID != 89012345 || installation.Account.Login != "asw101" {
+		t.Errorf("got %+v, want installation 89012345 for asw101", installation)
+	}
+}
+
+func TestInstallationReportsAnAPIError(t *testing.T) {
+	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	}))
+
+	if _, err := client.Installation(context.Background(), 1); err == nil {
+		t.Fatal("want an error for an installation the App cannot see")
+	}
+}
