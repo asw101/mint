@@ -170,7 +170,12 @@ func policyCredential(clientID, secretFile, apiKeyFile string) (tspolicy.Credent
 		}
 		return nil, err
 	}
-	return &tspolicy.OAuthClient{ID: clientID, Secret: secret, BaseURL: ""}, nil
+	// BaseURL is left empty on purpose, so the credential exchange always goes
+	// to the real Tailscale API. --api and TS_API_URL redirect the policy calls
+	// (useful against a stub) but must not be able to redirect where the client
+	// secret is sent: an environment variable that can exfiltrate a credential
+	// is a worse hole than the one the flag exists to fill.
+	return &tspolicy.OAuthClient{ID: clientID, Secret: secret}, nil
 }
 
 func policyFetch(ctx context.Context, client *tspolicy.Client, out string) error {

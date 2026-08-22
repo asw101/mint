@@ -338,12 +338,7 @@ func (o *OAuthClient) bearer(ctx context.Context, hc *http.Client) (string, erro
 		"client_id":     {id},
 		"client_secret": {secret},
 	}
-	base := o.BaseURL
-	if base == "" {
-		base = DefaultBaseURL
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimSuffix(base, "/")+"/api/v2/oauth/token", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.tokenURL(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
@@ -383,6 +378,20 @@ func (o *OAuthClient) bearer(ctx context.Context, hc *http.Client) (string, erro
 	}
 	o.expires = time.Now().Add(lifetime)
 	return o.token, nil
+}
+
+// tokenURL is where the client credentials are exchanged.
+//
+// It reads OAuthClient.BaseURL and deliberately not Client.BaseURL: the --api
+// flag redirects the policy calls, which is useful against a stub, but nothing
+// reachable from a flag or an environment variable may redirect where a secret
+// is sent. Only a test sets this field.
+func (o *OAuthClient) tokenURL() string {
+	base := o.BaseURL
+	if base == "" {
+		base = DefaultBaseURL
+	}
+	return strings.TrimSuffix(base, "/") + "/api/v2/oauth/token"
 }
 
 // ClientIDFromSecret reads the client id out of an OAuth client secret, which

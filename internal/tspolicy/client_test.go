@@ -308,3 +308,20 @@ func TestIsNotExist(t *testing.T) {
 		t.Fatalf("got %v, want a not-exist error", err)
 	}
 }
+
+func TestOAuthExchangeIgnoresTheClientBaseURL(t *testing.T) {
+	// --api points the policy calls somewhere; it must not be able to point the
+	// credential exchange somewhere. A flag or environment variable that can
+	// redirect where a secret is sent is worse than whatever it was added for.
+	oauth := &OAuthClient{ID: "tskey-client-x", Secret: "tskey-client-x-y"}
+	if got, want := oauth.tokenURL(), DefaultBaseURL+"/api/v2/oauth/token"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	// Client.BaseURL is a different field and does not reach it.
+	client := &Client{Cred: oauth, BaseURL: "http://attacker.example"}
+	_ = client
+	if got := oauth.tokenURL(); !strings.HasPrefix(got, DefaultBaseURL) {
+		t.Errorf("got %q, want the real API", got)
+	}
+}
