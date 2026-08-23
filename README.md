@@ -457,6 +457,7 @@ The README is the path you walk once. These are what you look up.
 | [docs/wormhole.md](./docs/wormhole.md) | Mailbox semantics: resolution, replacement, limits, threat boundary. |
 | [docs/operating.md](./docs/operating.md) | Approving, giving up access, resetting state, running as a service. |
 | [docs/policy.md](./docs/policy.md) | Managing the tailnet ACL with `mint policy`, and its two credentials. |
+| [docs/development.md](./docs/development.md) | Building, the version stamp, and how a release is cut. |
 | [init/README.md](./init/README.md) | Installing the systemd unit on Linux, start to finish. |
 
 ## Agent skills
@@ -479,43 +480,6 @@ ln -s ../../mint/skills/mint-policy .agents/skills/mint-policy
 ```
 
 Adjust the relative paths to wherever `mint/` sits.
-
-## Development
-
-```sh
-just            # list recipes
-just check      # gofmt check, vet, and tests
-just build      # binary into bin/
-just dist       # release binaries for every platform, with checksums
-```
-
-`just build` stamps the version from `git describe`, so a binary can say which
-release it came from and whether the tree was dirty:
-
-```console
-$ mint version
-mint v0.6.0
-  commit  c2bf8779b920 (clean)
-  built   2026-08-08T00:52:55Z
-  go      go1.26.5 darwin/arm64
-```
-
-A plain `go build` still reports the commit and build time — the toolchain
-records those — but cannot name the release.
-
-The tailnet is mocked in tests: `WhoIs` sits behind an `Identifier` interface
-and minting behind a `Minter`, so every authorization decision is testable
-without joining anything. Keep it that way.
-
-### Releases
-
-Push a `vX.Y.Z` tag. [`.github/workflows/release.yml`](./.github/workflows/release.yml)
-builds all four platforms, writes `SHA256SUMS`, attaches the systemd unit, and
-publishes the release. It asserts the full asset list before publishing, because
-the unit is not build output and a release missing it looks complete.
-
-[`ci.yml`](./.github/workflows/ci.yml) runs gofmt, vet and the race detector on
-every push, and cross-compiles every release target.
 
 ## Security notes
 

@@ -21,7 +21,7 @@ implements.
 | `internal/tspolicy/` | The Tailscale API client for the tailnet policy file. |
 | `policy_cli.go` | `mint policy`: fetch, diff, validate, apply. Operator only. |
 | `compat.go` | Everything that keeps the old `tsapp` name working. |
-| `docs/` | Reference: grant shapes, wormhole semantics, day-two operation, `mint policy`. |
+| `docs/` | Reference: grant shapes, wormhole semantics, day-two operation, `mint policy`, development. |
 
 `internal/app` is **mint's own code**. It began as a copy of the same package in
 `asw101/ghapp`, mint's predecessor, and mint is now the surviving consumer:
