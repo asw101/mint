@@ -946,3 +946,7 @@ every push, and cross-compiles every release target.
 - **Tags are classes, not instances.** The ACL cannot say "this session"; the
   per-node approval store is what supplies that, and it only works because
   `WhoIs` reports a stable node ID.
+
+## License
+
+[MIT](./LICENSE).
