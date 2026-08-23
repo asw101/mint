@@ -14,9 +14,9 @@ release it came from and whether the tree was dirty:
 
 ```console
 $ mint version
-mint v0.6.0
+mint v0.7.0
   commit  c2bf8779b920 (clean)
-  built   2026-08-08T00:52:55Z
+  built   2026-08-23T01:52:55Z
   go      go1.26.5 darwin/arm64
 ```
 
