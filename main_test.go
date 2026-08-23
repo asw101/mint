@@ -912,7 +912,7 @@ func TestMintOmitsRepositoriesForTheWildcard(t *testing.T) {
 func TestMintWidensWhenTheWildcardAppearsBesideNames(t *testing.T) {
 	// The wildcard already covers the named repositories, so narrowing to them
 	// would mint less than was approved.
-	body := mintBody(t, policy.Scope{Repos: []string{"_cloud_native_ai", policy.AllRepos}})
+	body := mintBody(t, policy.Scope{Repos: []string{"widget", policy.AllRepos}})
 
 	if _, ok := body["repositories"]; ok {
 		t.Errorf("the wildcard should win, got repositories %v", body["repositories"])
@@ -920,10 +920,10 @@ func TestMintWidensWhenTheWildcardAppearsBesideNames(t *testing.T) {
 }
 
 func TestMintNamesTheRepositoriesItWasGiven(t *testing.T) {
-	body := mintBody(t, policy.Scope{Repos: []string{"justfiles", "_cloud_native_ai"}})
+	body := mintBody(t, policy.Scope{Repos: []string{"widget", "gadget"}})
 
 	got, _ := json.Marshal(body["repositories"])
-	if string(got) != `["_cloud_native_ai","justfiles"]` {
+	if string(got) != `["gadget","widget"]` {
 		t.Errorf("got repositories %s, want the normalized pair", got)
 	}
 }

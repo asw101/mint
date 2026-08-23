@@ -156,15 +156,15 @@ func TestEvaluateRejectsMalformedScope(t *testing.T) {
 func TestOwnerQualifiedRepoIsAccepted(t *testing.T) {
 	e := newTestEngine(t)
 	e.Account = "asw101"
-	id := caller(Grant{Repos: []string{"_components"}})
+	id := caller(Grant{Repos: []string{"gadget"}})
 
 	// owner/name is how everyone writes a repository; it must mean the same as
 	// the bare name the API and the grants use.
-	got, _ := e.Evaluate(id, Scope{Repos: []string{"asw101/_components"}})
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"asw101/gadget"}})
 	if got.Outcome != Pending {
 		t.Fatalf("got %v (%s), want pending", got.Outcome, got.Reason)
 	}
-	if len(got.Scope.Repos) != 1 || got.Scope.Repos[0] != "_components" {
+	if len(got.Scope.Repos) != 1 || got.Scope.Repos[0] != "gadget" {
 		t.Errorf("got %v, want the owner stripped", got.Scope.Repos)
 	}
 }
@@ -172,15 +172,15 @@ func TestOwnerQualifiedRepoIsAccepted(t *testing.T) {
 func TestBareAndQualifiedNamesShareAnApproval(t *testing.T) {
 	e := newTestEngine(t)
 	e.Account = "asw101"
-	id := caller(Grant{Repos: []string{"_components"}})
+	id := caller(Grant{Repos: []string{"gadget"}})
 
-	first, _ := e.Evaluate(id, Scope{Repos: []string{"_components"}})
+	first, _ := e.Evaluate(id, Scope{Repos: []string{"gadget"}})
 	if _, err := e.Store.Approve(first.Request.ID, 0, testTime, e.NewID); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
 
 	// Spelling the owner out must not look like a different request.
-	got, _ := e.Evaluate(id, Scope{Repos: []string{"asw101/_components"}})
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"asw101/gadget"}})
 	if got.Outcome != Allowed {
 		t.Fatalf("got %v (%s), want allowed", got.Outcome, got.Reason)
 	}
@@ -193,7 +193,7 @@ func TestForeignOwnerIsRefused(t *testing.T) {
 
 	// Stripping the owner would turn someone else's repository into this
 	// account's repository of the same name.
-	got, _ := e.Evaluate(id, Scope{Repos: []string{"otherorg/_components"}})
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"otherorg/gadget"}})
 	if got.Outcome != Denied {
 		t.Fatalf("got %v, want denied", got.Outcome)
 	}
@@ -319,11 +319,11 @@ func TestDescribePrefersTagsOverTheTaggedDevicesUser(t *testing.T) {
 
 func TestOmittedPermissionsResolveFromTheGrant(t *testing.T) {
 	e := newTestEngine(t)
-	id := caller(Grant{Repos: []string{"_components"}, Permissions: map[string]string{"contents": "read"}})
+	id := caller(Grant{Repos: []string{"gadget"}, Permissions: map[string]string{"contents": "read"}})
 
 	// Naming no permissions means "the most this policy allows", so the
 	// request is narrowed to the grant rather than refused for exceeding it.
-	got, _ := e.Evaluate(id, Scope{Repos: []string{"_components"}})
+	got, _ := e.Evaluate(id, Scope{Repos: []string{"gadget"}})
 	if got.Outcome != Pending {
 		t.Fatalf("got %v (%s), want pending", got.Outcome, got.Reason)
 	}
@@ -401,7 +401,7 @@ func TestResolutionPicksTheGrantCoveringTheRepos(t *testing.T) {
 
 func TestDeniedUnscopedRequestExplainsItself(t *testing.T) {
 	e := newTestEngine(t)
-	id := caller(Grant{Repos: []string{"_components"}})
+	id := caller(Grant{Repos: []string{"gadget"}})
 
 	got, _ := e.Evaluate(id, Scope{})
 	if got.Outcome != Denied {
