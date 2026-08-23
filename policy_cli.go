@@ -246,11 +246,13 @@ func policyApply(ctx context.Context, client *tspolicy.Client, path string, yes,
 	// and it is a change that reads as innocuous in a large diff. The old name
 	// counts too: during the rename the policy legitimately grants one, the
 	// other, or both.
-	grantsMint := tspolicy.GrantsCapability(proposed, policy.CapabilityName) ||
-		tspolicy.GrantsCapability(proposed, policy.LegacyCapabilityName)
+	grantsMint := tspolicy.GrantsCapability(proposed, policy.CapabilityName)
+	for _, name := range policy.LegacyCapabilityNames {
+		grantsMint = grantsMint || tspolicy.GrantsCapability(proposed, name)
+	}
 	if !grantsMint && !force {
-		return fmt.Errorf("this policy grants neither %s nor %s, so every mint client would be denied; rerun with --force if that is intended",
-			policy.CapabilityName, policy.LegacyCapabilityName)
+		return fmt.Errorf("this policy grants none of %s, so every mint client would be denied; rerun with --force if that is intended",
+			strings.Join(append([]string{policy.CapabilityName}, policy.LegacyCapabilityNames...), ", "))
 	}
 
 	if err := client.Validate(ctx, proposed); err != nil {

@@ -66,7 +66,7 @@ func writePolicy(t *testing.T, body string) string {
 
 const policyWithMint = `{
   "grants": [
-    {"src": ["tag:agent"], "dst": ["tag:mint"], "app": {"asw101.dev/cap/mint": [{"repos": ["*"]}]}},
+    {"src": ["tag:agent"], "dst": ["tag:mint"], "app": {"aaronw.dev/cap/mint": [{"repos": ["*"]}]}},
   ],
 }
 `

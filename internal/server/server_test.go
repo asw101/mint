@@ -577,7 +577,7 @@ func TestCapabilityRename(t *testing.T) {
 
 	t.Run("legacy name alone still authorizes", func(t *testing.T) {
 		who := base(t, tailcfg.PeerCapMap{
-			LegacyCapName: encode(t, policy.Grant{Repos: []string{"one"}}),
+			LegacyCapNames[0]: encode(t, policy.Grant{Repos: []string{"one"}}),
 		})
 		s := newTestServer(t, who, &fakeMinter{})
 
@@ -589,8 +589,8 @@ func TestCapabilityRename(t *testing.T) {
 
 	t.Run("both names merge", func(t *testing.T) {
 		who := base(t, tailcfg.PeerCapMap{
-			CapName:       encode(t, policy.Grant{Repos: []string{"one"}}),
-			LegacyCapName: encode(t, policy.Grant{Repos: []string{"two"}}),
+			CapName:           encode(t, policy.Grant{Repos: []string{"one"}}),
+			LegacyCapNames[0]: encode(t, policy.Grant{Repos: []string{"two"}}),
 		})
 		s := newTestServer(t, who, &fakeMinter{})
 

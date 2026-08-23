@@ -62,13 +62,13 @@ func TestUnifiedCapabilityRename(t *testing.T) {
   ],
 }
 `)
-	updated := []byte(strings.ReplaceAll(string(old), "cap/tsapp", "cap/mint"))
+	updated := []byte(strings.ReplaceAll(string(old), "asw101.dev/cap/tsapp", "aaronw.dev/cap/mint"))
 
 	got := Unified("tailnet", "policy.hujson", old, updated)
 	if !strings.Contains(got, `-      "app": {"asw101.dev/cap/tsapp"`) {
 		t.Errorf("the removed grant is missing:\n%s", got)
 	}
-	if !strings.Contains(got, `+      "app": {"asw101.dev/cap/mint"`) {
+	if !strings.Contains(got, `+      "app": {"aaronw.dev/cap/mint"`) {
 		t.Errorf("the added grant is missing:\n%s", got)
 	}
 	// The destination tag is not part of this change and must not appear as one.
@@ -101,8 +101,8 @@ func TestUnifiedCountsLinesPerSide(t *testing.T) {
 }
 
 func TestGrantsCapability(t *testing.T) {
-	policy := []byte(`{"grants":[{"app":{"asw101.dev/cap/mint":[{"repos":["*"]}]}}]}`)
-	if !GrantsCapability(policy, "asw101.dev/cap/mint") {
+	policy := []byte(`{"grants":[{"app":{"aaronw.dev/cap/mint":[{"repos":["*"]}]}}]}`)
+	if !GrantsCapability(policy, "aaronw.dev/cap/mint") {
 		t.Error("want the capability found")
 	}
 	if GrantsCapability(policy, "asw101.dev/cap/tsapp") {

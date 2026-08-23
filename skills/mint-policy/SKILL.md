@@ -87,8 +87,8 @@ mysteriously losing access.
 `apply` fetches first and sends the version it read back as `If-Match`, so a
 change made in the admin console in the meantime fails the write rather than
 being silently overwritten. It validates, prints the diff, and refuses without
-`--yes`. It also refuses a policy that grants neither `asw101.dev/cap/mint` nor
-`asw101.dev/cap/tsapp`, because that is the shape of an accidental lockout;
+`--yes`. It also refuses a policy that grants none of the capability names mint
+knows, current or legacy, because that is the shape of an accidental lockout;
 `--force` overrides it.
 
 `--tailnet` defaults to `-`, meaning the credential's own tailnet, which is the
@@ -121,9 +121,10 @@ A grant reads correctly far more often than it works.
 
 ## Renaming a capability without locking anyone out
 
-mint honours `asw101.dev/cap/mint` and the older `asw101.dev/cap/tsapp` at the
-same time and merges grants under both, so there is no instant at which the
-policy and the binaries must agree. That is what makes the following safe:
+mint honours the current capability name and every name it has used before at
+the same time, merging grants under all of them, so there is no instant at which
+the policy and the binaries must agree. `internal/policy/policy.go` is the list.
+That is what makes the following safe:
 
 1. **Add** the new capability alongside the old one, granting the same thing.
    Apply. Every client keeps working, under whichever name it knows.
