@@ -57,49 +57,70 @@ on the subcommand, so a client machine needs nothing else.
 The sections below cover each piece; this is the order they go in. Steps 2 and
 5 are the ones that catch people — **both** nodes need tagging.
 
-```sh
-# 1. On the host where the App private key lives
-export GH_APP_ID=1234567              # your App's id
-export GH_APP_KEY_FILE=~/.config/mint/app.pem
-mint serve --hostname=mint
-#    minting from installation 89012345 (your-account)
-#    To start this tsnet server ... go to: https://login.tailscale.com/a/...
+**1.** On the host where the App private key lives, start the daemon.
+
+```console
+$ export GH_APP_ID=1234567                      # your App's id
+$ export GH_APP_KEY_FILE=~/.config/mint/app.pem
+$ mint serve --hostname=mint
+minting from installation 89012345 (your-account)
+To start this tsnet server ... go to: https://login.tailscale.com/a/...
 ```
 
 **2.** Visit that URL. Then in the Tailscale console, approve the node and give
 it **`tag:mint`**. The daemon logs its tailnet name once it is in:
 
-```
+```console
 tailnet node mint.your-tailnet.ts.net. ([100.x.y.z ...])
 tailnet mint:8080, admin ~/.config/mint/admin.sock
 ```
 
-**3.** Add the two grants to your tailnet policy — see
+**3.** Add the two grants to your tailnet policy: see
 [Full App permissions](#full-app-permissions).
 
-```sh
-# 4. On the client machine
-mint token --repo widget
-#    To start this tsnet server ... go to: https://login.tailscale.com/a/...
+**4.** On the client machine, ask for a token.
+
+```console
+$ mint token --repo widget
+To start this tsnet server ... go to: https://login.tailscale.com/a/...
 ```
 
 **5.** Visit that URL too, approve the node, and give it **`tag:agent`**.
 
-```sh
-# 6. Confirm the daemon sees the client as the grant expects
-mint whoami
-#    "tags": ["tag:agent"], "grants": [ ... ]   <- grants must not be null
+**6.** Confirm the daemon sees the client as the grant expects.
 
-# 7. Ask for a token
-mint token --repo widget
-#    mint: pending approval (request 14bf7231) ...
+```console
+$ mint whoami
+{
+  "grants": [ ... ],
+  "node_id": "nXXXXXXXXXXXX",
+  "node_name": "mint-client.your-tailnet.ts.net.",
+  "tags": ["tag:agent"],
+  "user": "tagged-devices"
+}
+```
 
-# 8. Approve it, on the daemon host
-mint approve 14bf7231 --ttl 720h
+`grants` must not be `null`. If it is, the capability is not reaching this node:
+see [no mint capability](#if-you-get-the-tailnet-policy-grants-no-mint-capability).
 
-# 9. Ask again
-mint token --repo widget
-#    ghs_...
+**7.** Ask for a token.
+
+```console
+$ mint token --repo widget
+mint: pending approval (request 14bf7231) ...
+```
+
+**8.** Approve it, on the daemon host.
+
+```console
+$ mint approve 14bf7231 --ttl 720h
+```
+
+**9.** Ask again.
+
+```console
+$ mint token --repo widget
+ghs_...
 ```
 
 From then on that scope is silent for that node. A **wider** scope returns to
@@ -457,11 +478,12 @@ daemon logs to stderr too, and never logs a token.
 
 A client can surrender everything it holds without an operator:
 
-```sh
-mint drop
-#   agent.example.ts.net dropped 1 approval, 0 pending requests, and 1 wormhole item
-mint drop --json
+```console
+$ mint drop
+agent.example.ts.net dropped 1 approval, 0 pending requests, and 1 wormhole item
 ```
+
+`mint drop --json` prints the same as an object.
 
 The daemon removes that node's approvals **and its outstanding requests** — a
 pending request is latent privilege, and leaving it behind would let it be
@@ -658,9 +680,9 @@ By default the socket is `0600`, so only the service user and root reach it,
 and every admin command needs `sudo`. `--socket-group` widens it to `0660`
 owned by a named group:
 
-```sh
-mint serve --socket-group=mint
-#   tailnet mint:8080, admin /var/lib/mint/admin.sock (group mint)
+```console
+$ mint serve --socket-group=mint
+tailnet mint:8080, admin /var/lib/mint/admin.sock (group mint)
 ```
 
 The **directory** must be traversable by that group too, or the wider socket
@@ -732,7 +754,7 @@ there too, which creates a second installation. Today that means a second
 daemon. A request naming an owner this installation is not for is refused
 rather than silently reinterpreted, so the failure is loud:
 
-```
+```console
 repository "otherorg/thing" names owner "otherorg", but this installation is for "your-account"
 ```
 
@@ -874,7 +896,7 @@ just dist       # release binaries for every platform, with checksums
 `just build` stamps the version from `git describe`, so a binary can say which
 release it came from and whether the tree was dirty:
 
-```
+```console
 $ mint version
 mint v0.6.0
   commit  c2bf8779b920 (clean)
