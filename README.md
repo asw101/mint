@@ -101,7 +101,7 @@ $ mint whoami
 ```
 
 `grants` must not be `null`. If it is, the capability is not reaching this node:
-see [no mint capability](#if-you-get-the-tailnet-policy-grants-no-mint-capability).
+see [no mint capability](./docs/acl.md#if-you-get-the-tailnet-policy-grants-no-mint-capability).
 
 **7.** Ask for a token.
 
@@ -176,16 +176,12 @@ It listens in two places, and the split is deliberate:
 Approving is an operator action, so it is not reachable from the tailnet at
 all. Dropping access is the one mutation a client can make for itself, because
 it only ever takes privilege away — see
-[Giving up access](#giving-up-access).
+[giving up access](./docs/operating.md#giving-up-access).
 
-**Plain HTTP is the default and is fine here** — tailnet traffic is already
-WireGuard-encrypted, so TLS adds no confidentiality, only a round trip.
-
-`--tls` serves HTTPS on `:443` if you want it anyway. There is **no certificate
-to supply**: Tailscale issues one for this node's MagicDNS name. It requires
-**HTTPS Certificates** enabled for the tailnet (admin console, DNS page), and
-the first request after startup can block for thirty seconds or more while
-LetsEncrypt issues the certificate — that is not a hang.
+Plain HTTP is the default and is right here: tailnet traffic is already
+WireGuard-encrypted, so TLS adds no confidentiality, only a round trip. `--tls`
+serves HTTPS anyway if you want it; see
+[docs/operating.md](./docs/operating.md#serving-https).
 
 ## Granting a client access
 
@@ -275,128 +271,10 @@ second confers the capability. Omit the first and the client cannot reach the
 daemon at all, which presents as a connectivity failure rather than a policy
 one.
 
-### Explicit read-only permissions
-
-Use this capability entry instead when a client class should be bounded to
-read-only even though the App itself can write:
-
-```hujson
-"aaronw.dev/cap/mint": [
-  {
-    "repos": ["*"],
-    "permissions": {"contents": "read"},
-  },
-],
-```
-
-A request that names no permissions resolves to the covering grant's, so
-`mint token --repo widget` still works and yields a `contents:read`
-token. A request for `contents:write` is denied before it can reach the
-approval queue: the tailnet capability is a ceiling that approval cannot
-raise.
-
-The one case that cannot be resolved is two grants covering the same
-repository with different permissions; name the permissions explicitly there.
-
-The distinction is intentional:
-
-| Capability entry | Omitted `--permission` means |
-| --- | --- |
-| `{ "repos": ["*"] }` | use the GitHub App installation's permissions |
-| `{ "repos": ["*"], "permissions": {"contents": "read"} }` | request `contents:read` |
-
-### Wormhole sender and recipient capabilities
-
-Wormhole extends the same `aaronw.dev/cap/mint` payload. It does not add a
-bearer token or a second authentication system:
-
-```hujson
-// A trusted sender may target agent-tagged nodes.
-{
-  "src": ["tag:admin"],
-  "dst": ["tag:mint"],
-  "app": {
-    "aaronw.dev/cap/mint": [{
-      "wormhole": {
-        "putToTags": ["tag:agent"],
-      },
-    }],
-  },
-},
-
-// An agent may list or consume items addressed to its stable node ID.
-{
-  "src": ["tag:agent"],
-  "dst": ["tag:mint"],
-  "app": {
-    "aaronw.dev/cap/mint": [{
-      "wormhole": {
-        "get": true,
-      },
-    }],
-  },
-},
-```
-
-`putToTags` bounds which recipient classes a compromised sender can fill. A
-CLI node name is only a lookup convenience: the daemon resolves it against the
-tailnet, checks its current tags, and stores its stable node ID. `get` and
-`list` derive the recipient exclusively from the caller's `WhoIs` result. They
-accept no recipient field, and a request body, query parameter, or header cannot
-select another node.
-
-Wormhole delivery never enters the approval queue. Sending an already-created
-secret is not the same decision as repeatedly minting a repository-scoped
-credential: `put` and `get` must be explicitly present in the ACL capability,
-while `discard` needs no grant because it can only reduce exposure.
-
-### If you get "the tailnet policy grants no mint capability"
-
-That error means everything up to authorization worked — the client joined,
-reached the daemon, and `WhoIs` identified it. Only the capability is missing.
-Run `mint whoami` to see exactly what the daemon sees, then check three
-things:
-
-1. **Does `src` match how the node actually presents?** `mint whoami` reports
-   `tags` and `user`, and they are mutually exclusive in practice:
-
-   | whoami shows | Match it with |
-   | --- | --- |
-   | `"user": "tagged-devices"` plus `tags` | the tag, e.g. `"src": ["tag:agent"]` |
-   | a real login name, no tags | `"src": ["autogroup:member"]` or that login |
-
-   **A tagged node is not in `autogroup:member`.** That autogroup covers user
-   identities, so a grant using it will never match a tagged node no matter how
-   permissive it looks. This is the most common way the capability comes back
-   empty.
-
-   For a user-owned node, this deliberately permissive grant confirms the path
-   works before you tighten it:
-
-   ```hujson
-   "grants": [
-     { "src": ["autogroup:member"], "dst": ["*"], "ip": ["*"] },
-     {
-       "src": ["autogroup:member"],
-       "dst": ["*"],
-       "app": {
-         "aaronw.dev/cap/mint": [
-           { "repos": ["*"] },
-         ],
-       },
-     },
-   ]
-   ```
-
-   That is deliberately permissive — use it to confirm the path works, then
-   tighten to tags.
-
-2. **Is the policy using the `grants` syntax?** App capabilities cannot be
-   expressed in the legacy `acls` array. A tailnet that still uses `acls` needs
-   a `grants` block adding alongside it.
-
-3. **Is the capability name exact?** It must be `aaronw.dev/cap/mint`, and
-   custom names must have the `<domain>/<path>/<name>` shape.
+Two other grant shapes exist: one bounding a client class to read-only even
+when the App can write, and one for wormhole senders and recipients. Both are in
+[docs/acl.md](./docs/acl.md), along with what to do when a grant that looks
+correct denies everything.
 
 ## Using it from a client
 
@@ -474,34 +352,6 @@ it.** The token, and any `--json` output, go to stdout alone — so
 `waiting for the tailnet to settle` notice, and every error go to stderr. The
 daemon logs to stderr too, and never logs a token.
 
-### Giving up access
-
-A client can surrender everything it holds without an operator:
-
-```console
-$ mint drop
-agent.example.ts.net dropped 1 approval, 0 pending requests, and 1 wormhole item
-```
-
-`mint drop --json` prints the same as an object.
-
-The daemon removes that node's approvals **and its outstanding requests** — a
-pending request is latent privilege, and leaving it behind would let it be
-approved after the node had given up its access. It needs no human because it
-can only ever *reduce* what the caller reaches, unlike approving.
-
-It also discards and zeroes every wormhole item addressed to the caller. It
-does **not** retract items that caller previously sent to other nodes.
-
-The node dropped is always the caller, taken from the tailnet `WhoIs` lookup.
-There is no way to name another one: `drop` sends no node id, and the daemon
-would ignore it if it did. Dropping again is a success, not an error — a node
-that already holds nothing has what it asked for. Exit `0` on success, `1` if
-the daemon could not be reached.
-
-Later requests behave exactly as they did before the node was ever approved:
-within the ACL they queue for approval, outside it they are denied.
-
 ## Wormhole: ephemeral secret handoff
 
 Wormhole is a memory-only mailbox for bootstrap values that should move
@@ -541,228 +391,30 @@ mint wormhole get \
 ./bootstrap-from-azure-sp-json
 ```
 
-The stored address remains the full tuple `(recipient stable node ID, sender
-stable node ID, key)`. When `--from` is omitted, the daemon resolves the key
-only if exactly one sender has an item for the caller. No match returns the same
-absent response as before. Two or more senders return `409`, name every
-candidate sender, and consume nothing; retry with an explicit `--from` only
-after deciding which sender is expected. This fails loud rather than letting
-another authorized sender substitute a value under a familiar key.
+The resolution rules when a key has more than one sender, replacement,
+lifetime, and what the memory-only design does and does not protect against are
+in [docs/wormhole.md](./docs/wormhole.md).
 
-Pass `--from NODE` whenever the expected sender is known and certainty matters.
-That precise form resolves the node name to its stable ID and consumes only the
-full tuple. A successful `get` atomically removes the item before writing the
-response. A second get is absent.
+## Managing the tailnet policy
 
-### Discovering addressed items
-
-`mint wormhole list` shows every live item addressed to the calling node:
-sender stable ID and name, key, creation and expiry times, and value size in
-bytes. It never returns a value, any part of one, or a value hash. Empty is a
-successful result and says plainly that no wormhole items are addressed to the
-node.
-
-The recipient always comes from the caller's tailnet `WhoIs` identity; body,
-query, and header fields cannot select another node. Listing requires the same
-`wormhole.get` capability as consuming. Expired items are pruned and omitted.
-
-### Replacement is explicit
-
-One live item may occupy a tuple. A plain retry while it is occupied returns
-`409` and exit `1`; it never silently overwrites the value a recipient is
-waiting for.
-
-When the credential was deliberately regenerated, `put --replace` atomically
-installs the new value and zeroes the old buffer under the same lock. It can
-replace only the caller's own tuple, because the sender stable ID comes from
-`WhoIs`. The response reports `"replaced": true`, the CLI warns on stderr that
-an unconsumed value was displaced, and the audit log records a distinct
-replacement event with the displaced opaque ID.
-
-This is a deliberate refinement of the original reject-overwrite design.
-Credential regeneration needs an expressible, bounded operation; forcing a new
-key every time would make the key cease to identify the intended handoff.
-Keeping replacement explicit preserves the protection against retry loops and
-confused senders, while the warning makes a stalled or unavailable recipient
-visible instead of treating replacement as an ordinary success. Replacing an
-expired or consumed item is an ordinary put and reports `"replaced": false`.
-
-### Limits, lifetime, and failure semantics
-
-| Property | v1 |
-| --- | --- |
-| Key | 1–128 bytes, `[A-Za-z0-9._/-]` |
-| Value | arbitrary bytes, at most 256 KiB decoded |
-| TTL | 10 minutes by default, 1 hour maximum |
-| Consumption | exactly once |
-| Per recipient | 16 live items |
-| Per sender | 32 live items |
-| Global | 256 live items and 32 MiB |
-
-Expired, consumed, and never-created items all return the same `404`/exit `1`
-response. Listing can reveal that a live item uses a different sender or key,
-but there is no peek endpoint and list metadata never includes value material.
-
-| HTTP | CLI exit | Meaning |
-| --- | ---: | --- |
-| `200` / `201` | `0` | put, consume, discard, or list succeeded |
-| `202` | `2` | reserved for future approval; unused in v1 |
-| `403` | `3` | caller capability, recipient tag, or recipient policy denied |
-| `400`, `404`, `409`, `413`, `429`, `5xx` | `1` | invalid, absent, ambiguous or occupied, too large, quota, or server failure |
-
-A transport error during `get` is ambiguous: the daemon may have removed the
-item before the response was lost. The CLI makes exactly one request, says that
-the item may already have been consumed, and never retries automatically.
-Reissue the source credential rather than trying to restore a consumed mailbox
-item.
-
-`discard` follows the same optional-`--from` resolution rules and removes the
-caller's tuple without returning its value. Use it when a handoff is cancelled.
-
-### Memory and threat boundary
-
-Items live only in a mutex-protected map. They are never written to
-`approvals.json`; restart intentionally loses them. Expired items are removed
-both lazily and by a periodic sweep. Consume, discard, expiry, replacement,
-shutdown, and `drop` overwrite the daemon-owned value buffer before releasing
-it.
-
-That is best-effort retention reduction, not a hard zeroization guarantee. Go,
-JSON/base64 handling, kernel buffers, swap, core dumps, the sender, and the
-receiving program may retain copies. Disable core dumps and avoid swap where
-reasonable. Revoking the actual credential remains the issuer's job.
-
-Tailnet WireGuard is the v1 transport confidentiality layer, matching mint's
-existing plain-HTTP listener. The daemon sees plaintext. A compromised daemon
-can read or alter live values and peer resolution; a compromised endpoint can
-read values available to that node. Wormhole v1 does not claim end-to-end
-encryption, durable delivery, restart recovery, leases, acknowledgements,
-multi-consume, sender retraction, rotation, or cloud-specific parsing.
-
-Audit logs contain event type, opaque item ID, sender and recipient stable IDs
-and names, expiry, and result. They never contain a value, base64 payload,
-request or response body, value hash, or key.
-
-## Approving
-
-Admin commands talk to the daemon over its Unix socket, so they run **on the
-daemon's host** — not from a client. If the daemon uses a non-default
-`--state-dir`, point them at its socket:
+Everything above asks you to edit the tailnet policy file by hand in the admin
+console. `mint policy` does it from the command line instead, which matters
+because the policy file **is** mint's authorization model: a broker that can
+mint tokens but cannot manage the grants that authorize minting is half a tool.
 
 ```sh
-export MINT_SOCKET=/path/to/state/admin.sock
+mint policy fetch -o policy.hujson    # current policy, comments intact
+$EDITOR policy.hujson
+mint policy diff policy.hujson        # what applying it would change
+mint policy apply policy.hujson --yes # replace it
 ```
 
-Otherwise you get `reach the daemon at ... (is 'mint serve' running on this
-host?)`, which means the socket path, not necessarily the daemon.
-
-From the daemon's host:
-
-```sh
-mint pending
-mint approve 7c2a --ttl 720h
-mint approvals
-mint revoke <approval-id>
-```
-
-An approval covers **narrower later requests**: approving
-`{one,two}: contents=write` silently covers a later `{one}: contents=read`. It
-does not cover wider ones — asking for a repo you have not approved for that
-node needs you again. That is the property worth having: **lateral movement
-costs a human, routine work does not.**
-
-`--ttl` is optional; without it the approval does not expire. Expired
-approvals are pruned at startup.
-
-### Approving without root
-
-By default the socket is `0600`, so only the service user and root reach it,
-and every admin command needs `sudo`. `--socket-group` widens it to `0660`
-owned by a named group:
-
-```console
-$ mint serve --socket-group=mint
-tailnet mint:8080, admin /var/lib/mint/admin.sock (group mint)
-```
-
-The **directory** must be traversable by that group too, or the wider socket
-changes nothing — the walk fails before the socket is consulted. Under systemd
-that is `StateDirectoryMode=0750`; see [`init/README.md`](./init/README.md).
-
-Be deliberate about who is in the group. **The socket has no authentication
-beyond these bits**, so membership is the power to approve any scope the
-tailnet policy allows — for practical purposes, sudo. Grant it to operators,
-not to service accounts, and not to anything an agent runs as.
-
-Naming a group that does not exist is a startup failure rather than a quiet
-fallback to `0600`, so a typo cannot leave you thinking you have less access
-than you do — or more.
-
-## Resetting local state
-
-Reset local tsnet identities and approvals before retiring or moving an
-installation:
-
-```sh
-mint reset --yes           # all local state: daemon and client alike
-```
-
-A target narrows it when only one is in the way:
-
-```sh
-mint reset daemon --yes
-mint reset client --yes
-```
-
-Without `--yes` it names what it would remove and stops, so a bare
-`mint reset` is the dry run.
-
-The daemon must be stopped first. A target-specific `--state-dir` handles a
-custom daemon or client location; the untargeted form uses
-`--daemon-state-dir` and `--client-state-dir`, because one path cannot describe
-both. Pass `--socket` when the daemon used a custom admin socket so `reset` can
-verify it is stopped.
-
-**Under systemd the daemon's state is not where `reset` looks by default.** The
-unit sets `--state-dir=/var/lib/mint`, while `reset` defaults to the config
-directory of whoever runs it, so an unqualified reset quietly clears nothing
-that matters:
-
-```sh
-sudo systemctl stop mint
-sudo mint reset daemon --state-dir /var/lib/mint --yes
-```
-
-This is deliberately destructive: resetting the daemon removes its tsnet
-identity and every pending request and approval; resetting the client removes
-its tsnet identity. The command does **not** unregister those nodes from
-Tailscale, so remove them separately in the Tailscale admin console.
-
-## One installation per daemon
-
-A GitHub App installation belongs to **one account**, and an installation token
-cannot span accounts. `mint serve` resolves its installation once at startup
-and mints from that, so one daemon serves one account.
-
-Adding repositories to that account costs nothing: install the App on them and,
-with `"repos": ["*"]`, they are immediately within the ceiling — each still
-needs one `mint approve` per node. **No policy edit is required**, which is
-why the ACL should not restate the repository list.
-
-Reaching a repository under a *different* account needs the App installed
-there too, which creates a second installation. Today that means a second
-daemon. A request naming an owner this installation is not for is refused
-rather than silently reinterpreted, so the failure is loud:
-
-```console
-repository "otherorg/thing" names owner "otherorg", but this installation is for "your-account"
-```
-
-Supporting several accounts from one daemon would mean resolving the
-installation per request from the owner, via
-`GET /repos/{owner}/{repo}/installation`, instead of once at startup. Worth
-doing when it is actually needed; it also makes the owner meaningful for
-routing rather than only for checking.
+`apply` validates against the tailnet, prints a diff, needs `--yes`, and sends
+back the version it fetched so a change made in the console meanwhile fails the
+write rather than being overwritten. **The daemon never holds the credential
+that can do this**: `mint serve` refuses to start with a Tailscale API
+credential in its environment. The two OAuth clients this wants, and why they
+are two, are in [docs/policy.md](./docs/policy.md).
 
 ## Configuration
 
@@ -795,73 +447,17 @@ today; `asw101.dev/cap/mint` was the name between the rename and the move to a
 domain the author owns. `internal/policy/policy.go` is the list, and says when
 each entry can go.
 
-## Managing the tailnet policy
+## Documentation
 
-Everything above asks you to edit the tailnet policy file by hand in the admin
-console. `mint policy` does it from the command line instead, which matters
-because the policy file **is** mint's authorization model: a broker that can
-mint tokens but cannot manage the grants that authorize minting is half a tool.
+The README is the path you walk once. These are what you look up.
 
-```sh
-mint policy fetch -o policy.hujson    # current policy, comments intact
-$EDITOR policy.hujson
-mint policy diff policy.hujson        # what applying it would change
-mint policy apply policy.hujson --yes # replace it
-```
-
-`apply` sends back the version it fetched, so an edit made in the console
-meanwhile fails the write rather than being silently overwritten. It validates
-against the tailnet first, prints the diff, and refuses a policy that grants no
-mint capability at all, which is the shape of an accidental lockout.
-
-The `tailscale` CLI cannot do any of this: it has no ACL or policy subcommand,
-and `syspolicy` diagnoses local MDM configuration rather than the tailnet. This
-is an API job.
-
-### Two credentials, not one
-
-The credential that can rewrite the policy sits **above** mint in the trust
-order. Something able to change the grants that authorize mint can grant itself
-anything the tailnet can express, so it is kept out of the daemon entirely.
-
-Create two OAuth clients in the Tailscale console, under Settings → OAuth
-clients:
-
-| Client | Scope | Used by | Secret file |
-| --- | --- | --- | --- |
-| Read | `policy_file:read` | `fetch`, `diff`, `validate` | `~/_/tailscale-oauth` |
-| Write | `policy_file` | `apply` | `~/_/tailscale-oauth-write` |
-
-Both 0600; mint refuses to read a secret file other users can. Because the
-commands read different files by default, the ones you run constantly hold a
-credential that *cannot* write the policy. That is a capability rather than a
-promise.
-
-**`mint serve` refuses to start** if it finds a Tailscale API credential in its
-environment. The daemon is bound by the policy; it does not get to edit it.
-
-**No mint flag takes a secret as its value.** Secrets come from files, or stdin
-via `--secret-file -`. The exchange documented elsewhere as
-`curl -d "client_secret=$SECRET"` publishes the secret to every process running
-as the same user through `/proc/<pid>/cmdline`; mint does the OAuth exchange
-in-process so it never reaches a command line.
-
-A `tskey-api-…` access token works too, via `--api-key-file`. It carries its
-creator's full permissions and expires after about ninety days, so use it to
-create the two OAuth clients and then stop.
-
-[`skills/mint-policy/SKILL.md`](./skills/mint-policy/SKILL.md) is the same thing
-written for an agent, including how to rename a capability without locking the
-tailnet out.
-
-## Running as a service
-
-[`init/mint.service`](./init/mint.service) runs the daemon under systemd as
-an unprivileged user, with the App key supplied by `LoadCredential` rather than
-left readable on disk. See [`init/README.md`](./init/README.md) for install,
-first start, and the one hardening setting that will otherwise stop it booting.
-
-Linux only — macOS uses launchd, and there is no plist here yet.
+| | |
+| --- | --- |
+| [docs/acl.md](./docs/acl.md) | Every grant shape, and why a correct-looking one denies everything. |
+| [docs/wormhole.md](./docs/wormhole.md) | Mailbox semantics: resolution, replacement, limits, threat boundary. |
+| [docs/operating.md](./docs/operating.md) | Approving, giving up access, resetting state, running as a service. |
+| [docs/policy.md](./docs/policy.md) | Managing the tailnet ACL with `mint policy`, and its two credentials. |
+| [init/README.md](./init/README.md) | Installing the systemd unit on Linux, start to finish. |
 
 ## Agent skills
 

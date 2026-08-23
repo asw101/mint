@@ -21,6 +21,7 @@ implements.
 | `internal/tspolicy/` | The Tailscale API client for the tailnet policy file. |
 | `policy_cli.go` | `mint policy`: fetch, diff, validate, apply. Operator only. |
 | `compat.go` | Everything that keeps the old `tsapp` name working. |
+| `docs/` | Reference: grant shapes, wormhole semantics, day-two operation, `mint policy`. |
 
 `internal/app` is **mint's own code**. It began as a copy of the same package in
 `asw101/ghapp`, mint's predecessor, and mint is now the surviving consumer:
@@ -67,6 +68,10 @@ pointing back at the retired predecessor gets the arrow backwards.
 - **Compatibility with the old name lives in `compat.go` and nowhere else.**
   mint was `tsapp` until 2026-08. Each hook there records what has to be true
   before it can be deleted; do not scatter new ones through the code.
+- **The README is the path you walk once; `docs/` is what you look up.** Adding
+  reference material to the README is how it got to 950 lines. The test is
+  whether a first-time reader needs it to get a token: if not, it belongs in
+  `docs/`. Nothing in the first-run walkthrough may depend on following a link.
 - **Run `just check` before finishing** — gofmt, vet, and tests.
 - **Commit as the human, never as the agent.** Every commit is attributed to
   the repository owner via the local Git identity. Do not override the author,
