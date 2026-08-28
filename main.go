@@ -59,7 +59,6 @@ Usage:
   mint reset --yes                delete all local state
   mint reset daemon --yes         narrow it to the daemon identity and approvals
   mint reset client --yes         narrow it to the client identity
-  mint migrate-state [target]     rename tsapp-era state to its mint name
 
 serve flags:
   --hostname NAME     tailnet name to claim         (default mint)
@@ -113,13 +112,6 @@ something a tailnet client can reach.
 Reset permanently deletes local tsnet identities and, for the daemon, every
 approval. It does not remove the corresponding nodes from the Tailscale admin
 console.
-
-mint was called tsapp until 2026-08 and still answers to it while the rename is
-in flight: it reads an existing tsapp state directory, accepts TSAPP_ variables,
-honours the old capability name alongside the new one, and falls back to a
-daemon named tsapp when no mint node is on the tailnet. Migrate-state ends that
-on a host by moving the directories, keeping the node identity and the
-approvals. See compat.go for the whole of it, and for when each part can go.
 
 Exit codes from 'mint token' and 'mint wormhole', so a script need not read
 the message:
@@ -191,8 +183,6 @@ func run(args []string) error {
 		return cmdAdminByID(args[1:], "revoke", "/v1/revoke")
 	case "reset":
 		return cmdReset(args[1:])
-	case "migrate-state":
-		return cmdMigrateState(args[1:])
 	case "version", "--version", "-version":
 		fmt.Print(versionReport())
 		return nil
@@ -270,9 +260,9 @@ func cmdServe(args []string) error {
 
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	hostname := fs.String("hostname", "mint", "tailnet name to claim")
-	stateDir := fs.String("state-dir", defaultStateDir("mint"), "tsnet state and approvals")
+	stateDir := fs.String("state-dir", defaultDir("mint"), "tsnet state and approvals")
 	socket := fs.String("socket", "", "admin socket path")
-	socketGroup := fs.String("socket-group", envOrLegacy("MINT_SOCKET_GROUP", ""),
+	socketGroup := fs.String("socket-group", envOr("MINT_SOCKET_GROUP", ""),
 		"group allowed to use the admin socket (name or gid); widens it to 0660")
 	port := fs.Int("port", 8080, "tailnet listen port")
 	useTLS := fs.Bool("tls", false, "serve HTTPS over the tailnet")
@@ -524,6 +514,10 @@ func resolveInstallation(ctx context.Context, client *app.Client, explicit int64
 
 // --- client ---
 
+// defaultServer is where a client looks for the daemon when nothing says
+// otherwise.
+const defaultServer = "http://mint:8080"
+
 type clientFlags struct {
 	server   string
 	hostname string
@@ -532,12 +526,9 @@ type clientFlags struct {
 }
 
 func (c *clientFlags) bind(fs *flag.FlagSet) {
-	fs.StringVar(&c.server, "server", envOrLegacy("MINT_SERVER", defaultServer), "daemon address")
-	fs.StringVar(&c.hostname, "hostname", envOrLegacy("MINT_HOSTNAME", "mint-client"), "tailnet name for this client")
-	fs.StringVar(&c.stateDir, "state-dir", envOrLegacy("MINT_STATE_DIR", defaultStateDir("mint-client")), "tsnet state")
-	// Plain os.Getenv, not envOrLegacy: there was never a TSAPP_JOIN_TIMEOUT
-	// to be compatible with, and a compatibility hook that answers to nothing
-	// is one more place the rename has to be remembered. See compat.go.
+	fs.StringVar(&c.server, "server", envOr("MINT_SERVER", defaultServer), "daemon address")
+	fs.StringVar(&c.hostname, "hostname", envOr("MINT_HOSTNAME", "mint-client"), "tailnet name for this client")
+	fs.StringVar(&c.stateDir, "state-dir", envOr("MINT_STATE_DIR", defaultDir("mint-client")), "tsnet state")
 	c.join.d, c.join.err = envJoinTimeout(os.Getenv("MINT_JOIN_TIMEOUT"))
 	fs.Var(&c.join, "join-timeout", "how long to wait to join the tailnet, 0 for no bound (env MINT_JOIN_TIMEOUT)")
 }
@@ -591,7 +582,6 @@ func (c *clientFlags) dial(ctx context.Context) (*tsnet.Server, *http.Client, er
 		srv.Close()
 		return nil, nil, err
 	}
-	c.server = resolveServer(budget.ctx, srv, c.server)
 	if status != nil && status.Self != nil {
 		c.server = expandTailnetHost(c.server, status.Self.DNSName)
 	}
@@ -1013,7 +1003,7 @@ func doWhileSettling(ctx context.Context, client *http.Client, newRequest func()
 // --- admin ---
 
 func adminSocketFlag(fs *flag.FlagSet) *string {
-	return fs.String("socket", envOrLegacy("MINT_SOCKET", filepath.Join(defaultStateDir("mint"), "admin.sock")),
+	return fs.String("socket", envOr("MINT_SOCKET", filepath.Join(defaultDir("mint"), "admin.sock")),
 		"daemon admin socket")
 }
 
@@ -1135,16 +1125,16 @@ func cmdReset(args []string) error {
 	var stateDir, daemonStateDir, clientStateDir, socket string
 	switch target {
 	case "daemon":
-		fs.StringVar(&stateDir, "state-dir", envOrLegacy("MINT_STATE_DIR", defaultStateDir("mint")),
+		fs.StringVar(&stateDir, "state-dir", envOr("MINT_STATE_DIR", defaultDir("mint")),
 			"daemon state directory")
 		fs.StringVar(&socket, "socket", "", "daemon admin socket used to check whether it is running")
 	case "client":
-		fs.StringVar(&stateDir, "state-dir", envOrLegacy("MINT_STATE_DIR", defaultStateDir("mint-client")),
+		fs.StringVar(&stateDir, "state-dir", envOr("MINT_STATE_DIR", defaultDir("mint-client")),
 			"client state directory")
 	case "all":
-		fs.StringVar(&daemonStateDir, "daemon-state-dir", defaultStateDir("mint"),
+		fs.StringVar(&daemonStateDir, "daemon-state-dir", defaultDir("mint"),
 			"daemon state directory")
-		fs.StringVar(&clientStateDir, "client-state-dir", defaultStateDir("mint-client"),
+		fs.StringVar(&clientStateDir, "client-state-dir", defaultDir("mint-client"),
 			"client state directory")
 		fs.StringVar(&socket, "socket", "", "daemon admin socket used to check whether it is running")
 	}

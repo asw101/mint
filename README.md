@@ -433,14 +433,6 @@ are two, are in [docs/policy.md](./docs/policy.md).
 | `--secret-file` | — | `~/_/tailscale-oauth`, or `-write` for `policy apply` |
 | `--api-key-file` | `TS_API_KEY_FILE` | — (OAuth is preferred) |
 
-`mint` was called `tsapp` until August 2026, and still answers to it while the
-rename lands: it reads an existing `~/.config/tsapp` state directory rather than
-starting fresh, accepts `TSAPP_`-prefixed variables, and looks for a daemon named
-`tsapp` when no `mint` node is on the tailnet. `mint migrate-state` ends that on
-a host by renaming the directories, keeping the node identity and the daemon's
-approvals. It lives in `compat.go`, and each piece records what has to be true
-before it can be deleted.
-
 The daemon also reads every capability name the project has used, merging grants
 under all of them, so the policy file and the binaries reading it never have to
 change in the same instant. `asw101.dev/cap/tsapp` is what live tailnets grant

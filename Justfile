@@ -189,10 +189,3 @@ policy-validate *args: build
 [group('policy')]
 policy-apply *args: build
     @"{{ binary }}" policy apply "$@"
-
-# --- Migration ---
-
-# Rename tsapp-era state directories on this host to their mint names.
-[group('migrate')]
-migrate-state *args: build
-    @"{{ binary }}" migrate-state "$@"

@@ -71,9 +71,9 @@ const policyWithMint = `{
 }
 `
 
-const policyWithTsapp = `{
+const policyWithLegacyMint = `{
   "grants": [
-    {"src": ["tag:agent"], "dst": ["tag:tsapp"], "app": {"asw101.dev/cap/tsapp": [{"repos": ["*"]}]}},
+    {"src": ["tag:agent"], "dst": ["tag:mint"], "app": {"asw101.dev/cap/mint": [{"repos": ["*"]}]}},
   ],
 }
 `
@@ -110,13 +110,13 @@ func TestPolicyApplyAcceptsTheLegacyCapability(t *testing.T) {
 	stub := &policyStub{current: []byte(policyWithMint)}
 	client := newPolicyClient(t, stub)
 
-	if err := policyApply(context.Background(), client, writePolicy(t, policyWithTsapp), true, false); err != nil {
+	if err := policyApply(context.Background(), client, writePolicy(t, policyWithLegacyMint), true, false); err != nil {
 		t.Fatalf("policyApply: %v", err)
 	}
 	if stub.writes != 1 {
 		t.Fatalf("wrote %d times, want 1", stub.writes)
 	}
-	if string(stub.written) != policyWithTsapp {
+	if string(stub.written) != policyWithLegacyMint {
 		t.Errorf("wrote %q, want the file as given", stub.written)
 	}
 }
@@ -137,7 +137,7 @@ func TestPolicyApplyNeedsYes(t *testing.T) {
 	stub := &policyStub{current: []byte(policyWithMint)}
 	client := newPolicyClient(t, stub)
 
-	err := policyApply(context.Background(), client, writePolicy(t, policyWithTsapp), false, false)
+	err := policyApply(context.Background(), client, writePolicy(t, policyWithLegacyMint), false, false)
 	if err == nil || !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("got %v, want a refusal naming --yes", err)
 	}
@@ -159,7 +159,7 @@ func TestPolicyApplyIsANoOpWhenNothingChanged(t *testing.T) {
 }
 
 func TestPolicyDiffAgainstTheTailnet(t *testing.T) {
-	stub := &policyStub{current: []byte(policyWithTsapp)}
+	stub := &policyStub{current: []byte(policyWithLegacyMint)}
 	client := newPolicyClient(t, stub)
 
 	if err := policyDiff(context.Background(), client, writePolicy(t, policyWithMint)); err != nil {
