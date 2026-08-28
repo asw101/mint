@@ -131,8 +131,8 @@ Two messages that are expected rather than wrong:
 - **`mint: waiting for the tailnet to settle...`** on a client's first run.
   The node reaches Running before its DNS is usable, so the request retries for
   a few seconds rather than failing.
-- **The client is silent apart from its login URL.** Only the daemon logs
-  freely.
+- **The client is silent apart from its login URL** and the line saying how
+  long it will wait for that login to happen. Only the daemon logs freely.
 
 ## Three layers of policy
 
@@ -330,7 +330,7 @@ react to differently, so a script need not read the message:
 | `0` | the command succeeded | use the token, value, or metadata as requested |
 | `2` | pending approval | retry once a human has approved |
 | `3` | denied by policy | stop; retrying will not help |
-| `1` | anything else | read the error; this includes absent or ambiguous wormhole items |
+| `1` | anything else | read the error; this includes absent or ambiguous wormhole items, and a join that ran out of time |
 
 ```sh
 if token=$(mint token --repo widget 2>/dev/null); then
@@ -425,6 +425,7 @@ are two, are in [docs/policy.md](./docs/policy.md).
 | `--installation` | `GH_APP_INSTALLATION_ID` | optional; discovered when the App has one |
 | `--api` | `GITHUB_API_URL` | `https://api.github.com` |
 | `--server` | `MINT_SERVER` | `http://mint:8080` |
+| `--join-timeout` | `MINT_JOIN_TIMEOUT` | `30s`, or `5m` once a login URL is waiting; `0` for no bound |
 | `--state-dir` | `MINT_STATE_DIR` | OS user config directory plus `mint` or `mint-client` |
 | `--socket` | `MINT_SOCKET` | `<state-dir>/admin.sock` |
 | `--socket-group` | `MINT_SOCKET_GROUP` | — (socket stays `0600`) |
@@ -455,7 +456,7 @@ The README is the path you walk once. These are what you look up.
 | --- | --- |
 | [docs/acl.md](./docs/acl.md) | Every grant shape, and why a correct-looking one denies everything. |
 | [docs/wormhole.md](./docs/wormhole.md) | Mailbox semantics: resolution, replacement, limits, threat boundary. |
-| [docs/operating.md](./docs/operating.md) | Approving, giving up access, resetting state, running as a service. |
+| [docs/operating.md](./docs/operating.md) | Approving, giving up access, resetting state, waiting for the tailnet, running as a service. |
 | [docs/policy.md](./docs/policy.md) | Managing the tailnet ACL with `mint policy`, and its two credentials. |
 | [docs/development.md](./docs/development.md) | Building, the version stamp, and how a release is cut. |
 | [init/README.md](./init/README.md) | Installing the systemd unit on Linux, start to finish. |

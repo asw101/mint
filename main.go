@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -21,9 +22,11 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 
 	"github.com/asw101/mint/internal/app"
@@ -83,11 +86,15 @@ token flags:
   --permission k=v    narrow a permission, repeatable
   --hostname NAME     tailnet name for this client  (default mint-client)
   --state-dir PATH    tsnet state for this client   (default OS config dir/mint-client)
+  --join-timeout D    how long to wait to join the tailnet
+                      (default 30s, 0 waits forever, env MINT_JOIN_TIMEOUT).
+                      A first run that prints a login URL waits 5m instead,
+                      because that wait is a human's
   --json              print the full response
 
 whoami and wormhole take the client flags that do not describe a scope —
---server, --hostname, and --state-dir — and drop and wormhole list take those
-plus --json.
+--server, --hostname, --state-dir, and --join-timeout — and drop and wormhole
+list take those plus --json.
 
 Drop needs no approval, because it only ever reduces what the caller can
 reach: the daemon removes the calling node's approvals and its outstanding
@@ -119,7 +126,8 @@ the message:
   0  a token, on stdout
   2  pending approval — unused by wormhole v1
   3  denied by policy — retrying will not help
-  1  anything else
+  1  anything else, including a join that ran out of time: 2 and 3 are the
+     daemon's answer, and a client that never reached it has none
 `
 
 // Exit codes a script can branch on. Pending and denied want different
@@ -520,17 +528,37 @@ type clientFlags struct {
 	server   string
 	hostname string
 	stateDir string
+	join     joinTimeoutFlag
 }
 
 func (c *clientFlags) bind(fs *flag.FlagSet) {
 	fs.StringVar(&c.server, "server", envOrLegacy("MINT_SERVER", defaultServer), "daemon address")
 	fs.StringVar(&c.hostname, "hostname", envOrLegacy("MINT_HOSTNAME", "mint-client"), "tailnet name for this client")
 	fs.StringVar(&c.stateDir, "state-dir", envOrLegacy("MINT_STATE_DIR", defaultStateDir("mint-client")), "tsnet state")
+	// Plain os.Getenv, not envOrLegacy: there was never a TSAPP_JOIN_TIMEOUT
+	// to be compatible with, and a compatibility hook that answers to nothing
+	// is one more place the rename has to be remembered. See compat.go.
+	c.join.d, c.join.err = envJoinTimeout(os.Getenv("MINT_JOIN_TIMEOUT"))
+	fs.Var(&c.join, "join-timeout", "how long to wait to join the tailnet, 0 for no bound (env MINT_JOIN_TIMEOUT)")
 }
 
 // dial joins the tailnet, printing the login URL on first run so the node can
 // be approved in the console.
+//
+// The join is bounded. Every client command waits here before it can say
+// anything at all, and a tailnet that never comes up used to mean a process
+// that never exited: `git` sat for minutes on the credential helper, whose
+// decline path reads an exit status a hung process never produces. The bound
+// lives here rather than in the callers so that every one of them has it.
 func (c *clientFlags) dial(ctx context.Context) (*tsnet.Server, *http.Client, error) {
+	if c.join.err != nil {
+		return nil, nil, c.join.err
+	}
+	budget := newJoinBudget(ctx, c.join.d, os.Stderr)
+	// The bound is on the join, not on the session: the returned server and
+	// client outlive it.
+	defer budget.stop()
+
 	srv := &tsnet.Server{
 		Hostname: c.hostname,
 		Dir:      c.stateDir,
@@ -539,21 +567,194 @@ func (c *clientFlags) dial(ctx context.Context) (*tsnet.Server, *http.Client, er
 		// UserLogf, which otherwise defaults to log.Printf and is noisy.
 		UserLogf: func(format string, args ...any) {
 			line := strings.TrimSpace(fmt.Sprintf(format, args...))
-			if strings.Contains(line, "://login.tailscale.com") || strings.Contains(line, "To authenticate") {
-				fmt.Fprintln(os.Stderr, line)
+			if !isAuthPrompt(line) {
+				return
 			}
+			fmt.Fprintln(os.Stderr, line)
+			// A first run is not a stall. srv.Up is blocked on a human
+			// opening that URL, and nobody finds a browser, logs in and
+			// approves a node inside the unattended budget. Seeing the URL
+			// is how we learn the wait belongs to a person, so the bound
+			// becomes a person's, and we say so: a wait somebody knows the
+			// length of is a wait, and a silent one is a hang.
+			budget.extend(authTimeout)
 		},
 	}
-	status, err := srv.Up(ctx)
+
+	var status *ipnstate.Status
+	err := joinUnder(budget, func(ctx context.Context) error {
+		var err error
+		status, err = srv.Up(ctx)
+		return err
+	})
 	if err != nil {
 		srv.Close()
-		return nil, nil, fmt.Errorf("join tailnet: %w", err)
+		return nil, nil, err
 	}
-	c.server = resolveServer(ctx, srv, c.server)
+	c.server = resolveServer(budget.ctx, srv, c.server)
 	if status != nil && status.Self != nil {
 		c.server = expandTailnetHost(c.server, status.Self.DNSName)
 	}
 	return srv, srv.HTTPClient(), nil
+}
+
+// isAuthPrompt reports whether a tsnet user log line is the first-run login
+// URL, which is both the one message worth showing and the sign that what
+// we are waiting for is a person.
+func isAuthPrompt(line string) bool {
+	return strings.Contains(line, "://login.tailscale.com") || strings.Contains(line, "To authenticate")
+}
+
+// joinTimeout bounds a join nobody is watching.
+//
+// A healthy join takes seconds. Thirty of them is generous for one and short
+// enough that a stalled credential helper fails while the person who ran it is
+// still there to read why.
+const joinTimeout = 30 * time.Second
+
+// authTimeout bounds a join somebody is watching: the first run, where the
+// node is waiting to be authorized in the console. That wait is legitimately
+// minutes long, so it gets its own budget rather than making the unattended
+// one long enough to cover it.
+const authTimeout = 5 * time.Minute
+
+// errJoinTimeout is the cause a joinBudget cancels with, so that running out
+// of time is distinguishable from SIGINT, which cancels with context.Canceled.
+var errJoinTimeout = errors.New("join timed out")
+
+// joinBudget is the bound on joining the tailnet: a context derived from the
+// caller's that cancels itself when the time is up, and can be given more time
+// when it turns out a human is on the other end of the wait.
+type joinBudget struct {
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+	warn   io.Writer
+
+	mu       sync.Mutex
+	timer    *time.Timer // nil when the budget is unbounded
+	budget   time.Duration
+	extended bool
+}
+
+// newJoinBudget derives a bounded context from parent. A budget of zero means
+// no bound, which is what --join-timeout 0 asks for.
+func newJoinBudget(parent context.Context, budget time.Duration, warn io.Writer) *joinBudget {
+	ctx, cancel := context.WithCancelCause(parent)
+	b := &joinBudget{ctx: ctx, cancel: cancel, warn: warn, budget: budget}
+	if budget > 0 {
+		b.timer = time.AfterFunc(budget, func() { b.cancel(errJoinTimeout) })
+	}
+	return b
+}
+
+// extend raises the bound to d and says so, reporting whether it did. It only
+// ever lengthens: an unbounded budget stays unbounded, and announcing a bound
+// that is not in force would be a lie.
+func (b *joinBudget) extend(d time.Duration) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.timer == nil || b.extended || d <= b.budget || b.ctx.Err() != nil {
+		return false
+	}
+	b.timer.Reset(d)
+	b.budget, b.extended = d, true
+	fmt.Fprintf(b.warn, "mint: waiting up to %s for this node to be authorized\n", d)
+	return true
+}
+
+// stop releases the budget. It is what keeps the bound on the join rather than
+// on everything the caller does with the connection afterwards.
+func (b *joinBudget) stop() {
+	b.mu.Lock()
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.mu.Unlock()
+	b.cancel(context.Canceled)
+}
+
+// explain names what actually went wrong. Running out of time is neither a
+// signal nor a transport failure, and reporting it as "context canceled" is
+// how a bound becomes as confusing as the hang it replaced.
+func (b *joinBudget) explain(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(context.Cause(b.ctx), errJoinTimeout) {
+		b.mu.Lock()
+		budget := b.budget
+		b.mu.Unlock()
+		// exitError, said out loud rather than fallen into: exitPending and
+		// exitDenied are the daemon's answer to a scope, and a client that
+		// never reached the daemon did not get an answer to report.
+		return &exitCodeError{code: exitError, err: fmt.Errorf(
+			"join tailnet: gave up after %s: the tailnet did not become usable "+
+				"(raise the bound with --join-timeout or MINT_JOIN_TIMEOUT, or set it to 0 to wait indefinitely)",
+			budget)}
+	}
+	return fmt.Errorf("join tailnet: %w", err)
+}
+
+// joinUnder runs join under b's bound. The join is a parameter so the bound is
+// exercisable without a tailnet: dial passes srv.Up, and a test passes a join
+// that never returns.
+func joinUnder(b *joinBudget, join func(context.Context) error) error {
+	return b.explain(join(b.ctx))
+}
+
+// joinTimeoutFlag is --join-timeout. It is a flag.Value rather than a
+// DurationVar because its default comes from the environment and that default
+// has to be able to fail: a mistyped MINT_JOIN_TIMEOUT that quietly became 30s
+// is a bound nobody asked for, imposed on the one person who asked for another.
+type joinTimeoutFlag struct {
+	d   time.Duration
+	err error
+}
+
+func (f *joinTimeoutFlag) String() string {
+	if f == nil {
+		return joinTimeout.String()
+	}
+	return f.d.String()
+}
+
+func (f *joinTimeoutFlag) Set(value string) error {
+	d, err := parseJoinTimeout(value)
+	if err != nil {
+		return err
+	}
+	// An explicit flag settles the question, including when the environment
+	// holds nonsense the caller has just overridden.
+	f.d, f.err = d, nil
+	return nil
+}
+
+// parseJoinTimeout reads a join bound. Empty is the default; zero is no bound;
+// anything unparseable is an error rather than a silent fallback, because the
+// whole point of setting it is wanting a bound other than the default one.
+func parseJoinTimeout(value string) (time.Duration, error) {
+	if value == "" {
+		return joinTimeout, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, errors.New("not a duration such as 30s or 5m")
+	}
+	if d < 0 {
+		return 0, errors.New("must not be negative; 0 means no bound")
+	}
+	return d, nil
+}
+
+// envJoinTimeout is parseJoinTimeout for MINT_JOIN_TIMEOUT, naming the
+// variable so the complaint points at what has to be fixed. The flag package
+// names the flag itself.
+func envJoinTimeout(value string) (time.Duration, error) {
+	d, err := parseJoinTimeout(value)
+	if err != nil {
+		return 0, fmt.Errorf("MINT_JOIN_TIMEOUT=%q: %w", value, err)
+	}
+	return d, nil
 }
 
 // expandTailnetHost turns a bare hostname into a MagicDNS name, using the

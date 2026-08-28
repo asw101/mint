@@ -715,6 +715,262 @@ func TestDoWhileSettlingHonoursContextCancellation(t *testing.T) {
 	}
 }
 
+// blockingJoin stands in for srv.Up on a tailnet that never comes up. The
+// bound is exercisable without one because joinUnder takes the join as an
+// argument.
+func blockingJoin(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestJoinUnderGivesUpWhenTheBudgetExpires(t *testing.T) {
+	b := newJoinBudget(context.Background(), 20*time.Millisecond, io.Discard)
+	defer b.stop()
+
+	start := time.Now()
+	err := joinUnder(b, blockingJoin)
+	if err == nil {
+		t.Fatal("want an error once the budget expires")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("waited %s, want the join to be cut off at the bound", elapsed)
+	}
+	// The message has to name the budget that expired, say what it means, and
+	// point at the way out; a bare "context canceled" is as opaque as the hang.
+	for _, want := range []string{"20ms", "did not become usable", "--join-timeout", "MINT_JOIN_TIMEOUT"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("got %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+func TestJoinTimeoutIsAGenericFailureNotAnAnswer(t *testing.T) {
+	b := newJoinBudget(context.Background(), 10*time.Millisecond, io.Discard)
+	defer b.stop()
+
+	err := joinUnder(b, blockingJoin)
+	// Pending and denied describe what the daemon said about a scope. A client
+	// that never reached the daemon has nothing to report but failure.
+	var coded *exitCodeError
+	if !errors.As(err, &coded) {
+		t.Fatalf("got %v, want an error carrying an exit code", err)
+	}
+	if coded.code != exitError {
+		t.Errorf("got exit %d, want %d", coded.code, exitError)
+	}
+}
+
+func TestJoinBudgetExtendsForTheLoginURL(t *testing.T) {
+	var warned strings.Builder
+	b := newJoinBudget(context.Background(), 50*time.Millisecond, &warned)
+	defer b.stop()
+
+	// A first run blocks in Up while somebody opens the login URL, which is
+	// longer than any unattended budget should be.
+	err := joinUnder(b, func(ctx context.Context) error {
+		b.extend(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+			return nil
+		}
+	})
+	if err != nil {
+		t.Fatalf("joinUnder: %v", err)
+	}
+	if !strings.Contains(warned.String(), "waiting up to 2s") {
+		t.Errorf("got %q, want the longer wait to be announced", warned.String())
+	}
+}
+
+func TestJoinBudgetAnnouncesTheLongerWaitOnce(t *testing.T) {
+	var warned strings.Builder
+	b := newJoinBudget(context.Background(), time.Minute, &warned)
+	defer b.stop()
+
+	// tsnet repeats the login URL while it waits. The wait is one wait.
+	if !b.extend(authTimeout) {
+		t.Fatal("want the first login URL to raise the bound")
+	}
+	if b.extend(authTimeout) {
+		t.Error("want a repeated login URL to say nothing new")
+	}
+	if got := strings.Count(warned.String(), "waiting up to"); got != 1 {
+		t.Errorf("got %d announcements, want 1", got)
+	}
+}
+
+func TestJoinBudgetNeverShortensAnUnboundedWait(t *testing.T) {
+	var warned strings.Builder
+	b := newJoinBudget(context.Background(), 0, &warned)
+	defer b.stop()
+
+	if b.extend(authTimeout) {
+		t.Error("want no bound to stay no bound")
+	}
+	if warned.String() != "" {
+		t.Errorf("got %q, want nothing said about a bound that is not in force", warned.String())
+	}
+	if _, ok := b.ctx.Deadline(); ok {
+		t.Error("want an unbounded budget to carry no deadline")
+	}
+	if err := joinUnder(b, func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+			return nil
+		}
+	}); err != nil {
+		t.Fatalf("joinUnder: %v", err)
+	}
+}
+
+func TestJoinBudgetKeepsInterruptionDistinct(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	b := newJoinBudget(ctx, time.Minute, io.Discard)
+	defer b.stop()
+	cancel()
+
+	// SIGINT arrives as a cancelled parent. Telling the user the tailnet timed
+	// out when they pressed ctrl-c would be a lie about their own machine.
+	err := joinUnder(b, blockingJoin)
+	if err == nil {
+		t.Fatal("want an error once the caller's context is cancelled")
+	}
+	if strings.Contains(err.Error(), "gave up after") {
+		t.Errorf("got %q, want it not to be reported as a timeout", err)
+	}
+	var coded *exitCodeError
+	if errors.As(err, &coded) {
+		t.Errorf("got exit %d, want an interruption to carry no exit code of its own", coded.code)
+	}
+}
+
+func TestParseJoinTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    time.Duration
+		wantErr string
+	}{
+		{name: "unset is the default", in: "", want: joinTimeout},
+		{name: "zero is no bound", in: "0", want: 0},
+		{name: "seconds", in: "45s", want: 45 * time.Second},
+		{name: "minutes", in: "5m", want: 5 * time.Minute},
+		{name: "a bare number is not a duration", in: "30", wantErr: "not a duration"},
+		{name: "nonsense is not a fallback", in: "soon", wantErr: "not a duration"},
+		{name: "negative is not zero", in: "-1s", wantErr: "must not be negative"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseJoinTimeout(tc.in)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("got %s, want an error mentioning %q", got, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("got %q, want it to mention %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseJoinTimeout(%q): %v", tc.in, err)
+			}
+			if got != tc.want {
+				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClientFlagsReadTheJoinTimeoutFromTheEnvironment(t *testing.T) {
+	t.Setenv("MINT_JOIN_TIMEOUT", "90s")
+
+	var cf clientFlags
+	fs := flag.NewFlagSet("token", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	cf.bind(fs)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cf.join.err != nil {
+		t.Fatalf("join timeout: %v", cf.join.err)
+	}
+	if cf.join.d != 90*time.Second {
+		t.Errorf("got %s, want 1m30s", cf.join.d)
+	}
+}
+
+func TestClientFlagsRefuseAnUnreadableJoinTimeout(t *testing.T) {
+	t.Setenv("MINT_JOIN_TIMEOUT", "half an hour")
+
+	var cf clientFlags
+	fs := flag.NewFlagSet("token", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	cf.bind(fs)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// Falling back to the default would apply a bound the operator did not
+	// ask for and thought they had replaced.
+	if cf.join.err == nil {
+		t.Fatal("want an unparseable environment value to be an error")
+	}
+	if !strings.Contains(cf.join.err.Error(), "MINT_JOIN_TIMEOUT") {
+		t.Errorf("got %q, want it to name the variable", cf.join.err)
+	}
+	if _, _, err := cf.dial(context.Background()); err == nil {
+		t.Error("want dial to refuse before it joins anything")
+	}
+}
+
+func TestJoinTimeoutFlagOverridesTheEnvironment(t *testing.T) {
+	t.Setenv("MINT_JOIN_TIMEOUT", "not a duration")
+
+	var cf clientFlags
+	fs := flag.NewFlagSet("token", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	cf.bind(fs)
+	if err := fs.Parse([]string{"--join-timeout", "0"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// The flag is the answer to the question the environment got wrong.
+	if cf.join.err != nil {
+		t.Errorf("got %v, want the explicit flag to settle it", cf.join.err)
+	}
+	if cf.join.d != 0 {
+		t.Errorf("got %s, want no bound", cf.join.d)
+	}
+
+	fs = flag.NewFlagSet("token", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	cf.bind(fs)
+	if err := fs.Parse([]string{"--join-timeout", "soon"}); err == nil {
+		t.Error("want a bad flag value to fail parsing")
+	}
+}
+
+func TestIsAuthPromptRecognisesTheLoginURL(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{line: "To authenticate, visit: https://login.tailscale.com/a/0123456789ab", want: true},
+		{line: "https://login.tailscale.com/a/0123456789ab", want: true},
+		{line: "AuthLoop: state is NeedsLogin", want: false},
+		{line: "", want: false},
+	}
+
+	for _, tc := range tests {
+		if got := isAuthPrompt(tc.line); got != tc.want {
+			t.Errorf("isAuthPrompt(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
 func TestVersionReportNamesTheBinary(t *testing.T) {
 	got := versionReport()
 	if !strings.HasPrefix(got, "mint ") {

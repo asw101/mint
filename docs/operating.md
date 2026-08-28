@@ -1,7 +1,8 @@
 # Operating the daemon
 
-Approving scopes, giving access up, throwing state away, and running mint as a
-service. Day-two work: none of it is needed to get a first token.
+Approving scopes, giving access up, throwing state away, how long a client
+waits for the tailnet, and running mint as a service. Day-two work: none of it
+is needed to get a first token.
 
 ## Approving
 
@@ -162,6 +163,53 @@ installation per request from the owner, via
 `GET /repos/{owner}/{repo}/installation`, instead of once at startup. Worth
 doing when it is actually needed; it also makes the owner meaningful for
 routing rather than only for checking.
+
+## How long a client waits for the tailnet
+
+Every client command — `token`, `whoami`, `drop`, `wormhole` — joins the
+tailnet before it can do anything, and that join is bounded. An unbounded one
+is not a slow command but a process that never exits, which is worse than a
+failure: `mint token` used as a Git credential helper leaves `git` sitting
+there, because the helper's decline path reads an exit status a hung process
+never produces.
+
+There are two budgets, because there are two kinds of wait:
+
+| Wait | Budget | Why |
+| --- | --- | --- |
+| Unattended: reconnecting an already-authorized node | 30s | A healthy join takes seconds. Thirty of them is generous for one and short enough that a stall fails while somebody is still watching. |
+| Attended: the first run, after the login URL is printed | 5m | The command is blocked on a person opening that URL and approving the node in the console. Nobody does that in thirty seconds. |
+
+The second is not a setting. Printing the login URL is how mint learns that the
+wait belongs to a human, so it raises the bound at that moment and says so:
+
+```console
+$ mint token --repo widget
+To authenticate, visit: https://login.tailscale.com/a/0123456789ab
+mint: waiting up to 5m0s for this node to be authorized
+```
+
+Running out of time is a plain failure — exit `1`, never `2` or `3`, which are
+the daemon's answer to a scope and a client that never reached it has none:
+
+```console
+$ mint token --repo widget
+mint: join tailnet: gave up after 30s: the tailnet did not become usable (raise the bound with --join-timeout or MINT_JOIN_TIMEOUT, or set it to 0 to wait indefinitely)
+```
+
+`--join-timeout` takes a Go duration and `MINT_JOIN_TIMEOUT` sets the same
+thing; `0` restores the old unbounded behaviour, which is worth reaching for
+only on a link slow enough that a real join needs longer than any number you
+would rather write down. An unparseable value is an error rather than a
+silent return to the default, since the point of setting it is wanting a
+different bound.
+
+The bound is on the *join*, not on the session: once the tailnet is up, the
+connection is not on a clock. The short wait you may still see afterwards —
+`mint: waiting for the tailnet to settle...` — is a different thing entirely:
+tsnet reports Running before the tailnet's DNS configuration has been applied,
+so the first request can fail to resolve a peer that is about to be reachable.
+That retry is `settleTimeout` in `main.go` and is not configurable.
 
 ## Running as a service
 
