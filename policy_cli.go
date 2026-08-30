@@ -243,16 +243,10 @@ func policyApply(ctx context.Context, client *tspolicy.Client, path string, yes,
 	}
 
 	// Removing mint's own capability is how a rename locks every client out,
-	// and it is a change that reads as innocuous in a large diff. The old name
-	// counts too: during the rename the policy legitimately grants one, the
-	// other, or both.
-	grantsMint := tspolicy.GrantsCapability(proposed, policy.CapabilityName)
-	for _, name := range policy.LegacyCapabilityNames {
-		grantsMint = grantsMint || tspolicy.GrantsCapability(proposed, name)
-	}
-	if !grantsMint && !force {
-		return fmt.Errorf("this policy grants none of %s, so every mint client would be denied; rerun with --force if that is intended",
-			strings.Join(append([]string{policy.CapabilityName}, policy.LegacyCapabilityNames...), ", "))
+	// and it is a change that reads as innocuous in a large diff.
+	if !tspolicy.GrantsCapability(proposed, policy.CapabilityName) && !force {
+		return fmt.Errorf("this policy does not grant %s, so every mint client would be denied; rerun with --force if that is intended",
+			policy.CapabilityName)
 	}
 
 	if err := client.Validate(ctx, proposed); err != nil {

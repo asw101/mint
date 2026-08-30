@@ -27,17 +27,6 @@ import (
 // tailscale API. The string lives in the policy package so denials can name it.
 const CapName tailcfg.PeerCapability = policy.CapabilityName
 
-// LegacyCapNames are the earlier spellings of the same capability, also read so
-// that renaming it in the tailnet policy cannot lock clients out mid-flight. See
-// policy.LegacyCapabilityNames for why, and for when each can go.
-var LegacyCapNames = func() []tailcfg.PeerCapability {
-	names := make([]tailcfg.PeerCapability, 0, len(policy.LegacyCapabilityNames))
-	for _, name := range policy.LegacyCapabilityNames {
-		names = append(names, tailcfg.PeerCapability(name))
-	}
-	return names
-}()
-
 // Identifier reports who a tailnet peer is. *local.Client satisfies it; tests
 // supply a fake so the authorization logic needs no tailnet.
 type Identifier interface {
@@ -246,14 +235,6 @@ func (s *Server) identify(r *http.Request) (policy.Identity, error) {
 	if err != nil {
 		return policy.Identity{}, fmt.Errorf("parse capability %s: %w", CapName, err)
 	}
-	for _, name := range LegacyCapNames {
-		legacy, err := tailcfg.UnmarshalCapJSON[policy.Grant](who.CapMap, name)
-		if err != nil {
-			return policy.Identity{}, fmt.Errorf("parse capability %s: %w", name, err)
-		}
-		grants = append(grants, legacy...)
-	}
-
 	identity := policy.Identity{
 		NodeID:   string(who.Node.StableID),
 		NodeName: who.Node.Name,

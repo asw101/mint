@@ -31,26 +31,6 @@ const AllRepos = "*"
 // do own, since nothing else will catch you borrowing somebody else's.
 const CapabilityName = "aaronw.dev/cap/mint"
 
-// LegacyCapabilityNames are the names this capability has answered to before.
-// The daemon honours all of them, because a tailnet's policy file and the
-// binaries reading it cannot be updated in the same instant: whichever order the
-// operator picks, one side is briefly behind, and a daemon that accepted only
-// the current name would lock out every client until the policy caught up.
-//
-// Grants under every name are merged rather than one shadowing the others, so
-// the transitional state is strictly additive and a rename can also be rolled
-// back without a second window of denial.
-//
-// Remove a name here once no tailnet mint serves grants it. Nothing else
-// depends on them.
-var LegacyCapabilityNames = []string{
-	// While the project was called tsapp. This is what live tailnets grant.
-	"asw101.dev/cap/tsapp",
-	// Briefly, after the rename to mint and before the domain was corrected to
-	// one we actually own.
-	"asw101.dev/cap/mint",
-}
-
 // permissionRank orders GitHub's permission levels so a request for "read"
 // can be satisfied by a grant of "write".
 var permissionRank = map[string]int{

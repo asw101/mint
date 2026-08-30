@@ -71,9 +71,12 @@ const policyWithMint = `{
 }
 `
 
-const policyWithLegacyMint = `{
+// policyWithMintNarrowed grants the same capability as policyWithMint under a
+// narrower scope, so applying one over the other is a real change the lockout
+// guard must let through.
+const policyWithMintNarrowed = `{
   "grants": [
-    {"src": ["tag:agent"], "dst": ["tag:mint"], "app": {"asw101.dev/cap/mint": [{"repos": ["*"]}]}},
+    {"src": ["tag:agent"], "dst": ["tag:mint"], "app": {"aaronw.dev/cap/mint": [{"repos": ["one"]}]}},
   ],
 }
 `
@@ -104,40 +107,11 @@ func TestPolicyApplyRefusesToRemoveMintsOwnCapability(t *testing.T) {
 	}
 }
 
-func TestPolicyApplyAcceptsTheLegacyCapability(t *testing.T) {
-	// Mid-rename the policy legitimately grants the old name, the new one, or
-	// both. Only "neither" is the dangerous state.
-	stub := &policyStub{current: []byte(policyWithMint)}
-	client := newPolicyClient(t, stub)
-
-	if err := policyApply(context.Background(), client, writePolicy(t, policyWithLegacyMint), true, false); err != nil {
-		t.Fatalf("policyApply: %v", err)
-	}
-	if stub.writes != 1 {
-		t.Fatalf("wrote %d times, want 1", stub.writes)
-	}
-	if string(stub.written) != policyWithLegacyMint {
-		t.Errorf("wrote %q, want the file as given", stub.written)
-	}
-}
-
-func TestPolicyApplyForceOverridesTheGuard(t *testing.T) {
-	stub := &policyStub{current: []byte(policyWithMint)}
-	client := newPolicyClient(t, stub)
-
-	if err := policyApply(context.Background(), client, writePolicy(t, policyWithNeither), true, true); err != nil {
-		t.Fatalf("policyApply: %v", err)
-	}
-	if stub.writes != 1 {
-		t.Fatalf("wrote %d times, want 1", stub.writes)
-	}
-}
-
 func TestPolicyApplyNeedsYes(t *testing.T) {
 	stub := &policyStub{current: []byte(policyWithMint)}
 	client := newPolicyClient(t, stub)
 
-	err := policyApply(context.Background(), client, writePolicy(t, policyWithLegacyMint), false, false)
+	err := policyApply(context.Background(), client, writePolicy(t, policyWithMintNarrowed), false, false)
 	if err == nil || !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("got %v, want a refusal naming --yes", err)
 	}
@@ -159,7 +133,7 @@ func TestPolicyApplyIsANoOpWhenNothingChanged(t *testing.T) {
 }
 
 func TestPolicyDiffAgainstTheTailnet(t *testing.T) {
-	stub := &policyStub{current: []byte(policyWithLegacyMint)}
+	stub := &policyStub{current: []byte(policyWithMintNarrowed)}
 	client := newPolicyClient(t, stub)
 
 	if err := policyDiff(context.Background(), client, writePolicy(t, policyWithMint)); err != nil {

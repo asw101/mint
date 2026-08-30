@@ -433,13 +433,6 @@ are two, are in [docs/policy.md](./docs/policy.md).
 | `--secret-file` | — | `~/_/tailscale-oauth`, or `-write` for `policy apply` |
 | `--api-key-file` | `TS_API_KEY_FILE` | — (OAuth is preferred) |
 
-The daemon also reads every capability name the project has used, merging grants
-under all of them, so the policy file and the binaries reading it never have to
-change in the same instant. `asw101.dev/cap/tsapp` is what live tailnets grant
-today; `asw101.dev/cap/mint` was the name between the rename and the move to a
-domain the author owns. `internal/policy/policy.go` is the list, and says when
-each entry can go.
-
 ## Documentation
 
 The README is the path you walk once. These are what you look up.
